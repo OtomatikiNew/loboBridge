@@ -1,0 +1,46 @@
+{
+  "installation_id": "club_109",
+  "club": {
+    "uuid": "club_109",
+    "name": "Example Club",
+    "timezone": "Europe/Madrid",
+    "source_system": "playtomic"
+  },
+  "mqtt": {
+    "broker": "mqtt.srlobo.example",
+    "port": 8883,
+    "tls": true,
+    "username": "mqtt-user",
+    "password": "mqtt-password",
+    "client_id": "ha-addon-club-109",
+    "base_topic": "srlobo/club_109"
+  },
+  "courts": [
+    {
+      "index": 1,
+      "entity_id": "pista_1",
+      "friendly_name": "PISTA CENTRAL G24",
+      "device_class": "light",
+      "source_id": "72",
+      "source_system": "playtomic"
+    },
+    {
+      "index": 2,
+      "entity_id": "pista_2",
+      "friendly_name": "PISTA 2",
+      "device_class": "light",
+      "source_id": "73",
+      "source_system": "playtomic"
+    }
+  ],
+  "doors": [
+    {
+      "index": 1,
+      "entity_id": "puerta_1",
+      "friendly_name": "Puerta principal",
+      "device_class": "door",
+      "source_id": "41",
+      "source_system": "playtomic"
+    }
+  ]
+}
