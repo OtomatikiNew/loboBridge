@@ -1,6 +1,6 @@
 name: "SrLobo MQTT Bridge"
 description: "Standard MQTT bridge between SrLobo Cloud and Home Assistant"
-version: "0.1.1"
+version: "0.1.2"
 slug: "srlobo_mqtt_bridge"
 init: false
 homeassistant_api: true
