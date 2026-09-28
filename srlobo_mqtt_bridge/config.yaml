@@ -4,6 +4,12 @@ version: "0.2.0"
 slug: "srlobo_mqtt_bridge"
 init: false
 homeassistant_api: true
+# "want": if the club's HA installation has no local MQTT broker,
+# the bridge must keep working without it
+# this only enables HA-native MQTT Discovery (mqtt_discovery.py) when a
+# local broker exists, it's unrelated to the SR.Lobo Cloud MQTT connection.
+services:
+  - mqtt:want
 arch:
   - aarch64
   - amd64

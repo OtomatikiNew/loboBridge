@@ -72,6 +72,41 @@ def test_court_mode_failure_does_not_fail_the_whole_command():
     assert ack_payload["status"] == "executed"
 
 
+def test_lux_loop_activation_seeds_lux_target():
+    handler, ha, mqtt = _handler()
+    handler.handle_court_command(
+        1, {"command_id": "cmd-lux-1", "mode": "LUX_LOOP", "lux_target": 320}
+    )
+    ha.call_service.assert_any_call(
+        "input_number", "set_value", "input_number.referencia_lux_pista_1", {"value": 320}
+    )
+
+
+def test_mode_only_command_without_lux_target_does_not_touch_lux_reference():
+    handler, ha, mqtt = _handler()
+    handler.handle_court_command(1, {"command_id": "cmd-lux-2", "mode": "AUTO"})
+    for call in ha.call_service.call_args_list:
+        assert call.args[0] != "input_number"
+
+
+def test_lux_target_seed_failure_does_not_fail_the_whole_command():
+    ha = MagicMock()
+
+    def call_service(domain, service, entity_id, data=None):
+        if domain == "input_number":
+            raise HomeAssistantError("entity not found")
+
+    ha.call_service.side_effect = call_service
+    handler, ha, mqtt = _handler(ha)
+
+    handler.handle_court_command(
+        1, {"command_id": "cmd-lux-3", "mode": "LUX_LOOP", "lux_target": 320}
+    )
+
+    ack_payload = mqtt.publish_court_ack.call_args[0][1]
+    assert ack_payload["status"] == "executed"
+
+
 def test_calibrate_action_calls_input_button_press():
     handler, ha, mqtt = _handler()
     handler.handle_court_command(

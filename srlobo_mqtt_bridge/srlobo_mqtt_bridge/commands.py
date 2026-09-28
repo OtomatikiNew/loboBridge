@@ -99,6 +99,14 @@ class CommandHandler:
         if mode is not None:
             self._set_mode(index, mode)
 
+        # ADR-002's 2026-09-18 amendment: a LUX_LOOP activation command
+        # carries a one-time lux_target seed value. Only present when the
+        # cloud actually wants to (re)seed it, so a plain mode-only command
+        # for an already-configured court can omit it.
+        lux_target = payload.get("lux_target")
+        if lux_target is not None:
+            self._seed_lux_target(index, lux_target)
+
     def _set_mode(self, index: int, mode: str) -> None:
         entity_id = self._options.mode_select_entity_template.format(n=index)
         try:
@@ -109,6 +117,19 @@ class CommandHandler:
             logger.warning(
                 "Could not set mode %s on %s (court %s), entity name unconfirmed against the real HA blueprint",
                 mode,
+                entity_id,
+                index,
+            )
+
+    def _seed_lux_target(self, index: int, lux_target: Any) -> None:
+        entity_id = self._options.lux_reference_entity_template.format(n=index)
+        try:
+            self._ha.call_service("input_number", "set_value", entity_id, {"value": lux_target})
+            logger.info("Court %s: seeded lux_target=%s on %s", index, lux_target, entity_id)
+        except HomeAssistantError:
+            # Same entity-name caveat as _set_mode: logged, not fatal.
+            logger.warning(
+                "Could not seed lux_target on %s (court %s), entity name unconfirmed against the real HA blueprint",
                 entity_id,
                 index,
             )

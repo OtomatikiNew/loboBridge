@@ -16,6 +16,7 @@ from .ha_client import HAStateListener, HomeAssistantClient
 from .health import HealthReporter
 from .logging_setup import setup_logging
 from .mqtt_client import BridgeMqttClient
+from .mqtt_discovery import publish_bridge_connectivity_discovery
 from .telemetry import TelemetryPublisher
 from .venue_config import VenueConfigHandler
 
@@ -64,6 +65,7 @@ def main() -> None:
     mqtt.loop_start()
     listener.start()
     health.start()
+    publish_bridge_connectivity_discovery(bootstrap.installation_id)
 
     logger.info("automation_bridge running")
     threading.Event().wait()  # Runs forever; every subsystem above manages its own thread.
