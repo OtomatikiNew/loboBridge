@@ -99,10 +99,10 @@ class CommandHandler:
         if mode is not None:
             self._set_mode(index, mode)
 
-        # ADR-002's 2026-09-18 amendment: a LUX_LOOP activation command
-        # carries a one-time lux_target seed value. Only present when the
-        # cloud actually wants to (re)seed it, so a plain mode-only command
-        # for an already-configured court can omit it.
+        # A LUX_LOOP activation command carries a one-time lux_target seed
+        # value. Only present when the cloud actually wants to (re)seed it,
+        # so a plain mode-only command for an already-configured court can
+        # omit it.
         lux_target = payload.get("lux_target")
         if lux_target is not None:
             self._seed_lux_target(index, lux_target)

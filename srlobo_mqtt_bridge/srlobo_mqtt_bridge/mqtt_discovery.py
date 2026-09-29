@@ -1,18 +1,18 @@
-"""Home Assistant native MQTT Discovery (roadmap item E3-05), on the club's
-own LOCAL Home Assistant MQTT broker -- a different broker and a different
-purpose than mqtt_client.py's connection to SR.Lobo Cloud.
+"""Home Assistant native MQTT Discovery, on the club's own LOCAL Home
+Assistant MQTT broker. That's a different broker and a different purpose
+than mqtt_client.py's connection to SR.Lobo Cloud.
 
-Scope decision, since no ADR specifies one: publish exactly one entity, a
-"SR.Lobo Bridge" connectivity binary_sensor, so an installer/on-site
-technician can see whether the bridge add-on itself is alive and connected
-directly from HA's own dashboard, without needing SR.Lobo Cloud access.
-Deliberately not mirroring court/door state into synthetic sensors here --
-the real underlying entities (the light group, the lock) are already
+Scope decision, since nothing else specifies one: publish exactly one
+entity, a "SR.Lobo Bridge" connectivity binary_sensor, so an installer or
+on-site technician can see whether the bridge add-on itself is alive and
+connected, directly from HA's own dashboard, without needing SR.Lobo Cloud
+access. Deliberately not mirroring court/door state into synthetic sensors
+here. The real underlying entities (the light group, the lock) are already
 visible in HA's own UI, since the bridge controls them directly rather than
-creating them; duplicating that into fake sensors would be redundant.
+creating them, so duplicating that into fake sensors would be redundant.
 
 Assumes the club's Home Assistant installation runs a local MQTT broker
-(almost always the official Mosquitto add-on) -- config.yaml declares
+(almost always the official Mosquitto add-on). config.yaml declares
 `services: [mqtt:want]` so HA Supervisor auto-injects this add-on's
 connection details (MQTT_HOST etc.) as environment variables if one exists.
 "want" (not "need") means the add-on must keep working if it's absent: if no
@@ -46,12 +46,12 @@ def _local_broker_env() -> Optional[Dict[str, str]]:
 
 def publish_bridge_connectivity_discovery(installation_id: str) -> None:
     """Connects to the local HA MQTT broker (if the `mqtt:want` service is
-    available) and publishes a retained MQTT Discovery config + an initial
-    "on" state for the bridge connectivity sensor, with a Last Will Testament
-    that flips it to "off" if the add-on's process dies without a clean
-    shutdown. No-ops entirely if no local broker is configured -- never
-    raises, since this is a nice-to-have, not connection-critical (unlike
-    bootstrap/mqtt_client.py).
+    available) and publishes a retained MQTT Discovery config plus an
+    initial "on" state for the bridge connectivity sensor, with a Last Will
+    Testament that flips it to "off" if the add-on's process dies without a
+    clean shutdown. No-ops entirely if no local broker is configured, and
+    never raises, since this is a nice-to-have, not connection-critical
+    the way bootstrap/mqtt_client.py is.
     """
     env = _local_broker_env()
     if env is None:
