@@ -10,7 +10,7 @@ OPTIONS_PATH = "/data/options.json"
 @dataclass
 class MqttConfig:
     """Per-installation MQTT connection details, sourced from bootstrap.
-    Never hardcode this, never share it across clubs (ADR-017)."""
+    Never hardcode this, never share it across clubs."""
 
     broker: str
     port: int = 8883
@@ -19,7 +19,7 @@ class MqttConfig:
     client_id: Optional[str] = None
     base_topic: str = ""
     tls: bool = True
-    # X.509 fallback (ADR-017), only used if backend sends certs instead of
+    # X.509 fallback, only used if backend sends certs instead of
     # username/password.
     ca_cert: Optional[str] = None
     client_cert: Optional[str] = None
@@ -29,7 +29,7 @@ class MqttConfig:
 @dataclass
 class CourtEntity:
     """A court from the bootstrap response. Real HA entity comes from `index`
-    (`light.luces_padel_{index}`, ADR-007 §1), not from a bootstrap name."""
+    (`light.luces_padel_{index}`), not from a bootstrap name."""
 
     index: int
     source_id: Optional[str] = None
@@ -40,11 +40,9 @@ class CourtEntity:
 class DoorEntity:
     """A door from the bootstrap response.
 
-    No fixed naming convention exists for doors like courts have
-    (ADR-019 doesn't define one), so `entity_id` is taken as the real HA
-    lock entity for this door (e.g. a Nuki `lock.*`). Note this is a
-    different meaning than the old add-on used this field for. Worth
-    double-checking with Álvaro that this matches what installers set up.
+    No fixed naming convention exists for doors like courts have, so
+    `entity_id` is taken as the real HA lock entity for this door
+    (e.g. a Nuki `lock.*`).
     """
 
     index: int
@@ -68,17 +66,23 @@ class AddonOptions:
     srlobo_api_url: str
     bootstrap_path: str
     log_level: str
-    # Mode select / calibration button / lux reference entities don't have a
-    # confirmed naming convention anywhere yet, so these are configurable
-    # instead of hardcoded. {n} = court's 1-based index. Placeholder defaults
-    # for now, need to confirm real names against the HA blueprint before
-    # trusting mode-switching/calibration in production.
+    # No confirmed naming convention for these entities, so they're
+    # configurable instead of hardcoded. {n} = court's 1-based index.
     mode_select_entity_template: str = "input_select.modo_pista_{n}"
     lux_reference_entity_template: str = "input_number.referencia_lux_pista_{n}"
     calibration_trigger_entity_template: str = "input_button.calibrar_pista_{n}"
 
 
 def load_options() -> AddonOptions:
+    """Loads and validates the add-on's options.json, applying defaults for
+    anything not explicitly set.
+
+    Returns:
+        The parsed add-on options.
+
+    Raises:
+        RuntimeError: If the required `srlobo_token` option is missing.
+    """
     with open(OPTIONS_PATH, "r", encoding="utf-8") as fh:
         raw: Dict[str, Any] = json.load(fh)
 

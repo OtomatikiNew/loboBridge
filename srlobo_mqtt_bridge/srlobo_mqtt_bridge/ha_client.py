@@ -2,9 +2,8 @@
 event stream.
 
 Goes through http://supervisor/core (or http://supervisor/supervisor for
-add-on/Supervisor info) with SUPERVISOR_TOKEN, never homeassistant.local
-(lessons-from-lobobrain.md #2). Every HTTP call and WS op has a timeout
-(lessons-from-lobobrain.md #6).
+add-on/Supervisor info) with SUPERVISOR_TOKEN, never homeassistant.local.
+Every HTTP call and WS op has a timeout.
 """
 
 import json
@@ -29,10 +28,18 @@ WS_RECONNECT_DELAY_S = 10
 
 
 class HomeAssistantError(RuntimeError):
-    pass
+    """Raised when a Home Assistant REST or WebSocket operation fails."""
 
 
 def _supervisor_token() -> str:
+    """Reads the Supervisor-issued auth token from the environment.
+
+    Returns:
+        The supervisor token.
+
+    Raises:
+        HomeAssistantError: If SUPERVISOR_TOKEN is not set.
+    """
     token = os.environ.get("SUPERVISOR_TOKEN")
     if not token:
         raise HomeAssistantError(
@@ -45,6 +52,12 @@ class HomeAssistantClient:
     """Synchronous REST access to HA Core and the Supervisor, plus service calls."""
 
     def __init__(self) -> None:
+        """Reads the supervisor token and builds the auth headers used by
+        every request this client makes.
+
+        Raises:
+            HomeAssistantError: If SUPERVISOR_TOKEN is not set.
+        """
         self._token = _supervisor_token()
         self._headers = {
             "Authorization": f"Bearer {self._token}",
@@ -52,9 +65,17 @@ class HomeAssistantClient:
         }
 
     def get_state(self, entity_id: str) -> Optional[Dict[str, Any]]:
-        """Returns the entity's state dict, or None if it doesn't exist (404).
-        Read-only, don't use this to gate a write that can create the entity
-        itself (lessons-from-lobobrain.md #3)."""
+        """Reads an entity's current state.
+
+        Read-only; don't use this to gate a write that can create the
+        entity itself.
+
+        Args:
+            entity_id: HA entity id to look up.
+
+        Returns:
+            The entity's state dict, or None if it doesn't exist (404).
+        """
         url = f"{CORE_API}/states/{entity_id}"
         response = requests.get(url, headers=self._headers, timeout=HTTP_TIMEOUT_S)
         if response.status_code == 404:
@@ -64,6 +85,11 @@ class HomeAssistantClient:
         return result
 
     def get_states(self) -> List[Dict[str, Any]]:
+        """Reads the full current state of every HA entity.
+
+        Returns:
+            A list of entity state dicts.
+        """
         url = f"{CORE_API}/states"
         response = requests.get(url, headers=self._headers, timeout=HTTP_TIMEOUT_S)
         response.raise_for_status()
@@ -74,7 +100,17 @@ class HomeAssistantClient:
         self, domain: str, service: str, entity_id: str, data: Optional[Dict[str, Any]] = None
     ) -> None:
         """Calls a real HA service (light.turn_on etc). This is how we control
-        real devices, not by writing synthetic state via POST /states."""
+        real devices, not by writing synthetic state via POST /states.
+
+        Args:
+            domain: HA service domain, e.g. "light".
+            service: Service to call within the domain, e.g. "turn_on".
+            entity_id: Entity id the service call targets.
+            data: Extra service data to send alongside entity_id.
+
+        Raises:
+            HomeAssistantError: If the service call does not succeed.
+        """
         url = f"{CORE_API}/services/{domain}/{service}"
         body = {"entity_id": entity_id, **(data or {})}
         response = requests.post(url, headers=self._headers, json=body, timeout=HTTP_TIMEOUT_S)
@@ -88,7 +124,16 @@ class HomeAssistantClient:
         """Writes synthetic state via POST /states. Only for the bridge's own
         diagnostic entities (sensor.lobobridge_mode etc), not as a stand-in
         for a real device's source of truth. Anything written this way
-        doesn't survive a Core restart (lessons-from-lobobrain.md #4)."""
+        doesn't survive a Core restart.
+
+        Args:
+            entity_id: Entity id to write state for.
+            state: New state value.
+            attributes: Attributes dict to attach to the state.
+
+        Raises:
+            HomeAssistantError: If the write does not succeed.
+        """
         url = f"{CORE_API}/states/{entity_id}"
         response = requests.post(
             url,
@@ -100,6 +145,11 @@ class HomeAssistantClient:
             raise HomeAssistantError(f"Failed to update {entity_id}: {response.status_code} {response.text}")
 
     def get_core_info(self) -> Dict[str, Any]:
+        """Reads HA Core's own config (version, location, timezone etc).
+
+        Returns:
+            The core config dict.
+        """
         url = f"{CORE_API}/config"
         response = requests.get(url, headers=self._headers, timeout=HTTP_TIMEOUT_S)
         response.raise_for_status()
@@ -107,6 +157,11 @@ class HomeAssistantClient:
         return result
 
     def get_supervisor_info(self) -> Dict[str, Any]:
+        """Reads the Supervisor's own info (version, backup status etc).
+
+        Returns:
+            The supervisor info dict.
+        """
         url = f"{SUPERVISOR_API}/info"
         response = requests.get(url, headers=self._headers, timeout=HTTP_TIMEOUT_S)
         response.raise_for_status()
@@ -114,9 +169,18 @@ class HomeAssistantClient:
         return result
 
     def set_core_config(self, latitude: float, longitude: float, time_zone: str, language: str) -> None:
-        """Sets HA's own core location/timezone/language config (ADR-015).
-        The ADR leaves whether to do this as an implementation choice, doing
-        it removes one more manual step per install."""
+        """Sets HA's own core location/timezone/language config, removing
+        one manual step per install.
+
+        Args:
+            latitude: Venue latitude.
+            longitude: Venue longitude.
+            time_zone: Venue IANA timezone name.
+            language: Venue UI language code.
+
+        Raises:
+            HomeAssistantError: If the write does not succeed.
+        """
         url = f"{CORE_API}/config/core/config"
         body = {"latitude": latitude, "longitude": longitude, "time_zone": time_zone, "language": language}
         response = requests.post(url, headers=self._headers, json=body, timeout=HTTP_TIMEOUT_S)
@@ -137,6 +201,12 @@ class HAStateListener:
     """
 
     def __init__(self, on_event: OnEventCallback, on_reconnect: Callable[[], None]) -> None:
+        """Stores the callbacks to invoke on connect and on each event.
+
+        Args:
+            on_event: Called with the event data of every state_changed event.
+            on_reconnect: Called right after each successful (re)connect, before any events are dispatched.
+        """
         self._token = _supervisor_token()
         self._on_event = on_event
         self._on_reconnect = on_reconnect
@@ -144,13 +214,17 @@ class HAStateListener:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
+        """Starts the listener's background connection thread."""
         self._thread = threading.Thread(target=self._run_forever, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        """Signals the background connection thread to stop."""
         self._stop.set()
 
     def _run_forever(self) -> None:
+        """Keeps the WebSocket connection alive, reconnecting with a fixed
+        delay after any failure, until stopped."""
         while not self._stop.is_set():
             try:
                 self._run_once()
@@ -161,6 +235,9 @@ class HAStateListener:
             time.sleep(WS_RECONNECT_DELAY_S)
 
     def _run_once(self) -> None:
+        """Opens one WebSocket connection, authenticates, subscribes to
+        state_changed, and dispatches events until the connection drops or
+        a stop is requested."""
         ws = websocket.create_connection(CORE_WS_URL, timeout=WS_CONNECT_TIMEOUT_S)
         try:
             self._authenticate(ws)
@@ -180,6 +257,14 @@ class HAStateListener:
             ws.close()
 
     def _authenticate(self, ws: "websocket.WebSocket") -> None:
+        """Completes the HA WebSocket auth handshake.
+
+        Args:
+            ws: Open WebSocket connection to authenticate on.
+
+        Raises:
+            HomeAssistantError: If the handshake sequence or auth itself fails.
+        """
         first = json.loads(ws.recv())
         if first.get("type") != "auth_required":
             raise HomeAssistantError(f"Unexpected first WebSocket message: {first}")
@@ -189,6 +274,14 @@ class HAStateListener:
             raise HomeAssistantError("HA WebSocket authentication failed")
 
     def _subscribe(self, ws: "websocket.WebSocket") -> None:
+        """Subscribes the WebSocket connection to state_changed events.
+
+        Args:
+            ws: Open, authenticated WebSocket connection.
+
+        Raises:
+            HomeAssistantError: If the subscribe request is not acknowledged as successful.
+        """
         ws.send(json.dumps({"id": 1, "type": "subscribe_events", "event_type": "state_changed"}))
         result = json.loads(ws.recv())
         if not result.get("success"):

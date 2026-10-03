@@ -1,7 +1,5 @@
 """Wires bootstrap, MQTT, HA REST/WebSocket, command execution, telemetry,
-venue config and health reporting together. See docs/DEVELOPER_NOTES.md and
-docs/architecture/local-automation-layer.md (srlobo-2.0 repo) for the design
-this implements.
+venue config and health reporting together.
 """
 
 import logging
@@ -24,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    """Bridge entrypoint: loads config, bootstraps the installation, wires
+    up every subsystem, and then blocks forever while they run on their
+    own threads."""
     options = load_options()
     setup_logging(options.log_level)
 
@@ -55,6 +56,9 @@ def main() -> None:
     health = HealthReporter(mqtt, ha, options)
 
     def on_reconnect() -> None:
+        """Re-runs entity discovery and re-seeds telemetry on every HA
+        WebSocket (re)connect, since a Core or add-on restart can change
+        what's actually present."""
         health.record_reconnect()
         discovery_state = discoverer.discover_all()
         telemetry.on_rediscover(discovery_state)

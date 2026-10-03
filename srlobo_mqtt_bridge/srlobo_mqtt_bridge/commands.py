@@ -1,11 +1,10 @@
 """Court/door command execution.
 
-On/off + brightness (courts) and open/close/unlock (doors) are fully
-specified by the ADRs, and call real HA services (light.*, lock.*), so no
-guessing needed there. Mode-switching and calibration touch HA helper
-entities with no documented naming convention anywhere (checked
-blueprints_HA, not in there either), so those go through the configurable
-entity-name templates in AddonOptions instead of a hardcoded guess.
+On/off + brightness (courts) and open/close/unlock (doors) call real HA
+services (light.*, lock.*) directly. Mode-switching and calibration touch HA
+helper entities with no documented naming convention anywhere, so those go
+through the configurable entity-name templates in AddonOptions instead of a
+hardcoded guess.
 """
 
 import logging
@@ -27,10 +26,18 @@ _DOOR_ACTION_TO_SERVICE = {
 
 
 def _utc_now_iso() -> str:
+    """Returns the current UTC time formatted as an ISO-8601 string.
+
+    Returns:
+        The current UTC timestamp, e.g. "2026-01-01T00:00:00Z".
+    """
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class CommandHandler:
+    """Executes court/door commands received over MQTT against Home
+    Assistant and publishes the resulting command ack."""
+
     def __init__(
         self,
         ha: HomeAssistantClient,
@@ -38,12 +45,27 @@ class CommandHandler:
         registry: EntityRegistry,
         options: AddonOptions,
     ) -> None:
+        """Stores the collaborators needed to execute and acknowledge commands.
+
+        Args:
+            ha: Client used to call Home Assistant services.
+            mqtt: Client used to publish command acks.
+            registry: Registry used to validate court/door indexes and resolve door entity ids.
+            options: Add-on options, including the configurable entity-name templates.
+        """
         self._ha = ha
         self._mqtt = mqtt
         self._registry = registry
         self._options = options
 
     def handle_court_command(self, index: int, payload: Dict[str, Any]) -> None:
+        """Handles an incoming court command, executing it against HA and
+        publishing an ack for it.
+
+        Args:
+            index: 1-based court index the command targets.
+            payload: Decoded command payload from the courts/{index}/command topic.
+        """
         if index not in self._registry.court_indexes():
             logger.warning("Received command for unknown court index %s", index)
             return
@@ -63,6 +85,13 @@ class CommandHandler:
             self._publish_ack(index, command_id, status="failed", error=str(exc))
 
     def handle_door_command(self, index: int, payload: Dict[str, Any]) -> None:
+        """Handles an incoming door command by calling the matching HA lock
+        service. Doors have no ack topic, unlike courts.
+
+        Args:
+            index: 1-based door index the command targets.
+            payload: Decoded command payload from the doors/{index}/command topic.
+        """
         if index not in self._registry.door_indexes():
             logger.warning("Received command for unknown door index %s", index)
             return
@@ -82,9 +111,15 @@ class CommandHandler:
             logger.info("Door %s: executed %s (%s.%s on %s)", index, action, domain, ha_service, entity_id)
         except HomeAssistantError:
             logger.exception("Door %s command %s failed", index, action)
-        # No ack topic for doors, ADR-002 §5.2 only defines one for courts.
 
     def _control_court(self, index: int, payload: Dict[str, Any]) -> None:
+        """Applies the on/off/brightness and mode/lux-target parts of a
+        court command, if present in the payload.
+
+        Args:
+            index: 1-based court index being controlled.
+            payload: Decoded court command payload.
+        """
         entity_id = court_helper_entity_id(index)
         state = payload.get("state")
         brightness_pct = payload.get("brightness_pct")
@@ -108,6 +143,12 @@ class CommandHandler:
             self._seed_lux_target(index, lux_target)
 
     def _set_mode(self, index: int, mode: str) -> None:
+        """Sets a court's mode-select helper entity to the given mode.
+
+        Args:
+            index: 1-based court index.
+            mode: Mode option to select.
+        """
         entity_id = self._options.mode_select_entity_template.format(n=index)
         try:
             self._ha.call_service("input_select", "select_option", entity_id, {"option": mode})
@@ -122,6 +163,13 @@ class CommandHandler:
             )
 
     def _seed_lux_target(self, index: int, lux_target: Any) -> None:
+        """Seeds a court's lux-reference helper entity with a one-time
+        target value carried by a LUX_LOOP activation command.
+
+        Args:
+            index: 1-based court index.
+            lux_target: Target lux value to seed.
+        """
         entity_id = self._options.lux_reference_entity_template.format(n=index)
         try:
             self._ha.call_service("input_number", "set_value", entity_id, {"value": lux_target})
@@ -135,6 +183,13 @@ class CommandHandler:
             )
 
     def _calibrate_court(self, index: int, payload: Dict[str, Any]) -> None:
+        """Triggers a court's calibration input_button, optionally with a
+        power percentage.
+
+        Args:
+            index: 1-based court index.
+            payload: Decoded court command payload; may carry calibration_power_pct.
+        """
         calibration_power_pct = payload.get("calibration_power_pct")
         entity_id = self._options.calibration_trigger_entity_template.format(n=index)
         data = {"power_pct": calibration_power_pct} if calibration_power_pct is not None else {}
@@ -142,6 +197,14 @@ class CommandHandler:
         logger.info("Court %s: triggered calibration via %s", index, entity_id)
 
     def _publish_ack(self, index: int, command_id: Optional[str], status: str, error: Optional[str]) -> None:
+        """Publishes a court command ack.
+
+        Args:
+            index: 1-based court index the command targeted.
+            command_id: Id of the command being acknowledged, as sent by the caller.
+            status: Outcome of the command, e.g. "executed" or "failed".
+            error: Error message if the command failed, otherwise None.
+        """
         self._mqtt.publish_court_ack(
             index,
             {

@@ -1,7 +1,5 @@
-"""
-SrLobo Cloud bootstrap client. 
-One-time call at startup to get connected,
-"""
+"""SrLobo Cloud bootstrap client. One-time call at startup to fetch
+per-installation MQTT credentials and entity config."""
 
 import logging
 import time
@@ -21,21 +19,35 @@ RETRY_MAX_DELAY_S = 30
 
 
 class BootstrapError(RuntimeError):
-    pass
+    """Raised when the bootstrap call fails or returns an unusable response."""
 
 
 class SrLoboBootstrapClient:
+    """Client for the one-time SrLobo Cloud bootstrap call that supplies
+    MQTT credentials and installation entity config."""
+
     def __init__(self, api_url: str, bootstrap_path: str, token: str) -> None:
+        """Stores the bootstrap endpoint and auth token for later use.
+
+        Args:
+            api_url: Base URL of the SrLobo Cloud API.
+            bootstrap_path: Path of the bootstrap endpoint, appended to api_url.
+            token: Bearer token used to authenticate the bootstrap request.
+        """
         self.api_url = api_url.rstrip("/")
         self.bootstrap_path = bootstrap_path
         self.token = token
 
     def fetch(self) -> BootstrapConfig:
-        """
-        Fetches and parses the bootstrap response, 
-        retrying with backoff on transient failures. 
-        Never logs the token or raw response, 
-        only the redacted form at debug level.
+        """Fetches and parses the bootstrap response, retrying with backoff
+        on transient failures. Never logs the token or raw response, only
+        the redacted form at debug level.
+
+        Returns:
+            The parsed bootstrap configuration.
+
+        Raises:
+            BootstrapError: If every retry attempt fails.
         """
         last_error: Optional[Exception] = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -57,6 +69,15 @@ class SrLoboBootstrapClient:
         raise BootstrapError(f"Bootstrap failed after {MAX_ATTEMPTS} attempts") from last_error
 
     def _fetch_once(self) -> BootstrapConfig:
+        """Performs a single bootstrap HTTP request and parses the result.
+
+        Returns:
+            The parsed bootstrap configuration.
+
+        Raises:
+            requests.RequestException: If the HTTP request itself fails.
+            BootstrapError: If the response is missing required fields.
+        """
         url = f"{self.api_url}{self.bootstrap_path}"
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT_S)
@@ -66,6 +87,17 @@ class SrLoboBootstrapClient:
         return self._parse(payload)
 
     def _parse(self, payload: Dict[str, Any]) -> BootstrapConfig:
+        """Converts the raw bootstrap JSON payload into a BootstrapConfig.
+
+        Args:
+            payload: Parsed JSON body of the bootstrap response.
+
+        Returns:
+            The structured bootstrap configuration.
+
+        Raises:
+            BootstrapError: If a required field is missing from the payload.
+        """
         mqtt_payload = payload.get("mqtt", {})
         try:
             mqtt_config = MqttConfig(
@@ -104,6 +136,15 @@ class SrLoboBootstrapClient:
 
     @staticmethod
     def _parse_court(item: Dict[str, Any], source_system: Optional[str]) -> CourtEntity:
+        """Builds a CourtEntity from one item of the bootstrap `courts` list.
+
+        Args:
+            item: Raw court entry from the bootstrap payload.
+            source_system: Fallback source system if the item doesn't specify its own.
+
+        Returns:
+            The parsed court entity.
+        """
         return CourtEntity(
             index=int(item["index"]),
             source_id=str(item.get("source_id") or item.get("id") or "") or None,
@@ -112,6 +153,15 @@ class SrLoboBootstrapClient:
 
     @staticmethod
     def _parse_door(item: Dict[str, Any], source_system: Optional[str]) -> DoorEntity:
+        """Builds a DoorEntity from one item of the bootstrap `doors` list.
+
+        Args:
+            item: Raw door entry from the bootstrap payload.
+            source_system: Fallback source system if the item doesn't specify its own.
+
+        Returns:
+            The parsed door entity.
+        """
         return DoorEntity(
             index=int(item["index"]),
             entity_id=item.get("entity_id"),

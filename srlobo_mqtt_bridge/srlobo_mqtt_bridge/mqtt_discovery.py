@@ -33,6 +33,13 @@ DISCOVERY_PREFIX = "homeassistant"
 
 
 def _local_broker_env() -> Optional[Dict[str, str]]:
+    """Reads the local HA MQTT broker's connection details from the
+    environment, if the `mqtt:want` Supervisor service injected them.
+
+    Returns:
+        A dict with host/port/username/password, or None if no local
+        broker is configured.
+    """
     host = os.environ.get("MQTT_HOST")
     if not host:
         return None
@@ -52,6 +59,9 @@ def publish_bridge_connectivity_discovery(installation_id: str) -> None:
     clean shutdown. No-ops entirely if no local broker is configured, and
     never raises, since this is a nice-to-have, not connection-critical
     the way bootstrap/mqtt_client.py is.
+
+    Args:
+        installation_id: This installation's id, used to derive the discovery object/device ids.
     """
     env = _local_broker_env()
     if env is None:

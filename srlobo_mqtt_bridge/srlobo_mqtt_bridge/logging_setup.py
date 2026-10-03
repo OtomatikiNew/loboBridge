@@ -27,6 +27,12 @@ def redact(value: Any) -> Any:
 
     Safe on anything, non-dict/list values just pass through. Run bootstrap
     responses, options, mqtt config etc through this before logging them.
+
+    Args:
+        value: Value to redact; typically a dict, list, or scalar.
+
+    Returns:
+        A copy of value with sensitive dict values replaced by "[REDACTED]".
     """
     if isinstance(value, dict):
         return {
@@ -39,6 +45,11 @@ def redact(value: Any) -> Any:
 
 
 def setup_logging(level: str) -> None:
+    """Configures the root logger's level and output format.
+
+    Args:
+        level: Log level name (case-insensitive), e.g. "info" or "debug".
+    """
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

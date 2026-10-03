@@ -1,4 +1,4 @@
-"""Venue configuration via retained MQTT (ADR-015).
+"""Venue configuration via retained MQTT.
 
 Bootstrap stays call-once for connection-critical config. This handles venue
 metadata that can change mid-session (club rename, address correction,
@@ -32,15 +32,33 @@ class VenueConfig:
 
 
 class VenueConfigHandler:
+    """Validates and applies venue/config MQTT messages."""
+
     def __init__(self, ha: HomeAssistantClient) -> None:
+        """Stores the HA client used to apply venue config to HA core.
+
+        Args:
+            ha: Client used to write venue latitude/longitude/timezone/language to HA core config.
+        """
         self._ha = ha
         self._current: Optional[VenueConfig] = None
 
     @property
     def current(self) -> Optional[VenueConfig]:
+        """Returns:
+            The most recently applied venue config, or None if none has
+            been received yet.
+        """
         return self._current
 
     def handle(self, payload: Dict[str, Any]) -> None:
+        """Validates an incoming venue/config payload and, if valid,
+        applies it as the current venue config and pushes location/
+        timezone/language to HA core config.
+
+        Args:
+            payload: Decoded venue/config message payload.
+        """
         parsed = self._validate(payload)
         if parsed is None:
             logger.error("Rejected invalid venue/config snapshot, keeping previous one")
@@ -49,9 +67,8 @@ class VenueConfigHandler:
         self._current = parsed
         logger.info("Applied venue config for %s", parsed.club_name)
 
-        # ADR-015 leaves "does the bridge write this to HA core config" as an
-        # M4 implementation choice. Doing it removes a manual per-install
-        # step (lat/long/tz/language feed HA's own sun integration, weather,
+        # Writing this to HA core config removes a manual per-install step
+        # (lat/long/tz/language feed HA's own sun integration, weather,
         # local automations).
         try:
             self._ha.set_core_config(
@@ -64,6 +81,15 @@ class VenueConfigHandler:
             logger.exception("Failed to apply venue config to HA core config")
 
     def _validate(self, payload: Dict[str, Any]) -> Optional[VenueConfig]:
+        """Validates a venue/config payload's schema version and required
+        fields, and parses it into a VenueConfig.
+
+        Args:
+            payload: Decoded venue/config message payload.
+
+        Returns:
+            The parsed VenueConfig, or None if the payload is invalid.
+        """
         if payload.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
             logger.error("Unsupported venue/config schema_version: %r", payload.get("schema_version"))
             return None
