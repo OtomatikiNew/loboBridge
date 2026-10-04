@@ -1,9 +1,15 @@
 name: "SrLobo MQTT Bridge"
 description: "Standard MQTT bridge between SrLobo Cloud and Home Assistant"
-version: "0.1.2"
+version: "0.2.0"
 slug: "srlobo_mqtt_bridge"
 init: false
 homeassistant_api: true
+# "want": if the club's HA installation has no local MQTT broker,
+# the bridge must keep working without it
+# this only enables HA-native MQTT Discovery (mqtt_discovery.py) when a
+# local broker exists, it's unrelated to the SR.Lobo Cloud MQTT connection.
+services:
+  - mqtt:want
 arch:
   - aarch64
   - amd64
@@ -17,12 +23,18 @@ options:
   srlobo_api_url: "https://srlobo.otomatiki.xyz"
   bootstrap_path: "/api/homeassistant/bootstrap"
   log_level: "info"
+  mode_select_entity_template: "input_select.modo_pista_{n}"
+  lux_reference_entity_template: "input_number.referencia_lux_pista_{n}"
+  calibration_trigger_entity_template: "input_button.calibrar_pista_{n}"
 
 schema:
   srlobo_token: password
   srlobo_api_url: str
   bootstrap_path: str
   log_level: list(debug|info|warning|error)
+  mode_select_entity_template: str
+  lux_reference_entity_template: str
+  calibration_trigger_entity_template: str
 
 map:
   - ssl:rw
