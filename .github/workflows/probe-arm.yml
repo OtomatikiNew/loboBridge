@@ -1,8 +1,0 @@
-name: Probe ARM runner (temporary)
-on: workflow_dispatch
-jobs:
-  probe:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
-    steps:
-      - run: uname -m && docker version --format '{{.Server.Arch}}'
