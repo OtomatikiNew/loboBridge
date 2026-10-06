@@ -1,5 +1,6 @@
 """Wires bootstrap, MQTT, HA REST/WebSocket, command execution, telemetry,
-venue config and health reporting together.
+venue config, the offline schedule, the local dashboard and health
+reporting together.
 """
 
 import logging
@@ -8,6 +9,8 @@ import threading
 from .bootstrap import SrLoboBootstrapClient
 from .commands import CommandHandler
 from .config import load_options
+from .dashboard import DashboardProvisioner
+from .device_registry import DisabledEntityEnabler
 from .discovery import Discoverer
 from .entity_registry import EntityRegistry
 from .ha_client import HAStateListener, HomeAssistantClient
@@ -15,10 +18,15 @@ from .health import HealthReporter
 from .logging_setup import setup_logging
 from .mqtt_client import BridgeMqttClient
 from .mqtt_discovery import publish_bridge_connectivity_discovery
+from .persistence import DATA_DIR
+from .rediscovery import RediscoveryCoordinator
+from .schedule import OfflineScheduler
 from .telemetry import TelemetryPublisher
 from .venue_config import VenueConfigHandler
 
 logger = logging.getLogger(__name__)
+
+BOOTSTRAP_CACHE_PATH = f"{DATA_DIR}/bootstrap_cache.json"
 
 
 def main() -> None:
@@ -32,6 +40,7 @@ def main() -> None:
         api_url=options.srlobo_api_url,
         bootstrap_path=options.bootstrap_path,
         token=options.srlobo_token,
+        cache_path=BOOTSTRAP_CACHE_PATH,
     ).fetch()
     logger.info(
         "Bootstrap loaded for installation %s with %s courts and %s doors",
@@ -48,27 +57,33 @@ def main() -> None:
     mqtt.on_court_command(commands.handle_court_command)
     mqtt.on_door_command(commands.handle_door_command)
 
-    venue_config = VenueConfigHandler(ha)
+    scheduler = OfflineScheduler(ha, registry, bootstrap.installation_id)
+    scheduler.load()
+    mqtt.on_schedule(scheduler.handle_schedule)
+    mqtt.on_cloud_signal(scheduler.mark_cloud_alive)
+
+    dashboard = DashboardProvisioner(ha, options)
+    venue_config = VenueConfigHandler(ha, on_applied=dashboard.update_venue)
     mqtt.on_venue_config(venue_config.handle)
 
-    telemetry = TelemetryPublisher(mqtt, ha, options)
+    telemetry = TelemetryPublisher(mqtt, ha, options, commands)
     discoverer = Discoverer(ha, registry, bootstrap)
     health = HealthReporter(mqtt, ha, options)
 
-    def on_reconnect() -> None:
-        """Re-runs entity discovery and re-seeds telemetry on every HA
-        WebSocket (re)connect, since a Core or add-on restart can change
-        what's actually present."""
-        health.record_reconnect()
-        discovery_state = discoverer.discover_all()
-        telemetry.on_rediscover(discovery_state)
+    enabler = DisabledEntityEnabler(ha, options.reenable_manufacturers)
+    rediscovery = RediscoveryCoordinator(ha, discoverer, enabler, telemetry, dashboard, health)
 
-    listener = HAStateListener(on_event=telemetry.on_state_changed, on_reconnect=on_reconnect)
+    listener = HAStateListener(
+        on_event=telemetry.on_state_changed,
+        on_reconnect=rediscovery.on_reconnect,
+        on_device_registry_updated=rediscovery.on_device_registry_updated,
+    )
 
     mqtt.connect()
     mqtt.loop_start()
     listener.start()
     health.start()
+    scheduler.start()
     publish_bridge_connectivity_discovery(bootstrap.installation_id)
 
     logger.info("automation_bridge running")
