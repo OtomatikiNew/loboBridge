@@ -3,7 +3,9 @@
 # Build context: srlobo_mqtt_bridge/ (see .github/workflows/publish.yml).
 ARG BUILD_FROM
 
-FROM ${BUILD_FROM} AS builder
+# Compile on plain Alpine 3.21 (same release as the add-on base image): the
+# base image pins packages that conflict with the compiler toolchain.
+FROM alpine:3.21 AS builder
 RUN apk add --no-cache python3 python3-dev py3-pip gcc g++ musl-dev patchelf ccache libffi-dev
 WORKDIR /src
 COPY requirements.txt /src/requirements.txt
