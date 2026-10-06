@@ -24,6 +24,11 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish_version:
+        description: "Only republish the public config.yaml pointing at this already-built image version (skips tests and build). Leave empty for a normal release."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -40,6 +45,7 @@ env:
 
 jobs:
   test:
+    if: inputs.publish_version == '' || inputs.publish_version == null
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -149,6 +155,7 @@ jobs:
 
   publish:
     needs: build
+    if: always() && (needs.build.result == 'success' || (inputs.publish_version != '' && inputs.publish_version != null))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -162,12 +169,17 @@ jobs:
           path: public
 
       - name: Build public repo content
+        env:
+          PUBLISH_VERSION: ${{ inputs.publish_version }}
         run: |
           set -euo pipefail
           rm -rf "public/${ADDON_DIR}"
           mkdir -p "public/${ADDON_DIR}"
           cp "src/${ADDON_DIR}/config.yaml" "public/${ADDON_DIR}/config.yaml"
           yq -i ".arch = [\"aarch64\", \"amd64\"] | .image = \"${REGISTRY}/{arch}-${IMAGE_NAME}\"" "public/${ADDON_DIR}/config.yaml"
+          if [ -n "${PUBLISH_VERSION}" ]; then
+            PUBLISH_VERSION="${PUBLISH_VERSION}" yq -i '.version = strenv(PUBLISH_VERSION)' "public/${ADDON_DIR}/config.yaml"
+          fi
           for f in icon.png logo.png CHANGELOG.md; do
             if [ -f "src/${ADDON_DIR}/$f" ]; then cp "src/${ADDON_DIR}/$f" "public/${ADDON_DIR}/$f"; fi
           done
