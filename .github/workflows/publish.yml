@@ -1,0 +1,175 @@
+# Builds the automation bridge add-on image and publishes it to the public
+# LuPOS-hub org.
+#
+# Source code stays in this private repo. The public repo
+# (LuPOS-hub/automation-bridge-addon) only gets the add-on's config.yaml with
+# an `image:` line, plus docs, so Home Assistant pulls the prebuilt image
+# instead of building from source.
+#
+# Runs on any tag starting with "v" (e.g. v0.2.1) or manually. The image tag
+# is the `version:` in srlobo_mqtt_bridge/config.yaml. An image that already
+# exists for that version is not rebuilt: bump the version to release.
+#
+# Each image is smoke-tested before it is pushed: s6 `with-contenv` (used by
+# run.sh) must exist and the bridge package must import with its dependencies.
+#
+# Required secrets (org or repo level):
+#   LUPOS_PUBLISH_USER   lupos-release-bot
+#   LUPOS_PUBLISH_TOKEN  classic token of that user, scopes: write:packages, public_repo
+
+name: Publish add-on to LuPOS-hub
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ADDON_DIR: srlobo_mqtt_bridge
+  IMAGE_NAME: automation-bridge
+  REGISTRY: ghcr.io/lupos-hub
+  PUBLIC_REPO: LuPOS-hub/automation-bridge-addon
+  # Same base image as the SR.Lobo 1.0 add-on: Alpine + s6-overlay + bashio.
+  # Plain alpine has no /usr/bin/with-contenv, which run.sh needs.
+  BASE_IMAGE: ghcr.io/hassio-addons/base
+  BASE_IMAGE_VERSION: "17.2.4"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run tests
+        working-directory: ${{ env.ADDON_DIR }}
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+          python -m pytest -q
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        arch:
+          # aarch64: Home Assistant Green. amd64: HA OS on Intel/AMD PCs (e.g. NUC).
+          - name: aarch64
+            platform: linux/arm64
+          - name: amd64
+            platform: linux/amd64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: meta
+        run: |
+          version="$(yq '.version' "${ADDON_DIR}/config.yaml")"
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "No version in ${ADDON_DIR}/config.yaml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "ref=${REGISTRY}/${{ matrix.arch.name }}-${IMAGE_NAME}:$version" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.LUPOS_PUBLISH_USER }}
+          password: ${{ secrets.LUPOS_PUBLISH_TOKEN }}
+
+      - name: Skip if this version is already published
+        id: exists
+        run: |
+          if docker manifest inspect "${{ steps.meta.outputs.ref }}" > /dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.meta.outputs.ref }} already exists, skipping build"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.exists.outputs.already == 'false'
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.exists.outputs.already == 'false'
+
+      - uses: docker/build-push-action@v6
+        if: steps.exists.outputs.already == 'false'
+        with:
+          context: ${{ env.ADDON_DIR }}
+          platforms: ${{ matrix.arch.platform }}
+          build-args: |
+            BUILD_FROM=${{ env.BASE_IMAGE }}/${{ matrix.arch.name }}:${{ env.BASE_IMAGE_VERSION }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.PUBLIC_REPO }}
+            org.opencontainers.image.description=SR.Lobo automation bridge Home Assistant add-on
+            io.hass.type=addon
+            io.hass.arch=${{ matrix.arch.name }}
+            io.hass.version=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.ref }}
+          load: true
+          push: false
+          provenance: false
+
+      - name: Smoke test
+        if: steps.exists.outputs.already == 'false'
+        run: |
+          docker run --rm --platform "${{ matrix.arch.platform }}" --entrypoint /bin/sh \
+            "${{ steps.meta.outputs.ref }}" -c \
+            'test -x /usr/bin/with-contenv && cd /app && python3 -c "import srlobo_mqtt_bridge.main" && echo smoke-ok'
+
+      - name: Push
+        if: steps.exists.outputs.already == 'false'
+        run: docker push "${{ steps.meta.outputs.ref }}"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PUBLIC_REPO }}
+          token: ${{ secrets.LUPOS_PUBLISH_TOKEN }}
+          path: public
+
+      - name: Build public repo content
+        run: |
+          set -euo pipefail
+          rm -rf "public/${ADDON_DIR}"
+          mkdir -p "public/${ADDON_DIR}"
+          cp "src/${ADDON_DIR}/config.yaml" "public/${ADDON_DIR}/config.yaml"
+          yq -i ".arch = [\"aarch64\", \"amd64\"] | .image = \"${REGISTRY}/{arch}-${IMAGE_NAME}\"" "public/${ADDON_DIR}/config.yaml"
+          for f in icon.png logo.png CHANGELOG.md; do
+            if [ -f "src/${ADDON_DIR}/$f" ]; then cp "src/${ADDON_DIR}/$f" "public/${ADDON_DIR}/$f"; fi
+          done
+          if [ -d "src/${ADDON_DIR}/translations" ]; then cp -r "src/${ADDON_DIR}/translations" "public/${ADDON_DIR}/translations"; fi
+          cp src/.github/public/DOCS.md "public/${ADDON_DIR}/DOCS.md"
+          cp src/.github/public/repository.yaml public/repository.yaml
+          cp src/.github/public/README.md public/README.md
+
+      - name: Commit and push
+        working-directory: public
+        run: |
+          git config user.name "LuPOS-hub release bot"
+          git config user.email "alvaro@otomatiki.xyz"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Public repo already up to date"
+            exit 0
+          fi
+          version="$(yq '.version' "${ADDON_DIR}/config.yaml")"
+          git commit -q -m "Release: automation bridge ${version}"
+          if ! git push > push.log 2>&1; then
+            echo "::error title=git push failed::$(tr '\n' ' ' < push.log)"
+            exit 1
+          fi
