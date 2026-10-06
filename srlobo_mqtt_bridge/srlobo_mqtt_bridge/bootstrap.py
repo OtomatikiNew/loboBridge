@@ -1,6 +1,13 @@
 """SrLobo Cloud bootstrap client. One-time call at startup to fetch
-per-installation MQTT credentials and entity config."""
+per-installation MQTT credentials and entity config.
 
+The last good response is cached in /data so the bridge can still start
+offline (needed for the ADR-013 schedule). The cache stores a hash of the
+token it was fetched with, because clubs are cloned from the master HA
+backup and a clone shouldn't start up as the master.
+"""
+
+import hashlib
 import logging
 import time
 from typing import Any, Dict, Optional
@@ -9,6 +16,7 @@ import requests
 
 from .config import BootstrapConfig, CourtEntity, DoorEntity, MqttConfig
 from .logging_setup import redact
+from .persistence import read_json, remove_file, write_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -22,37 +30,56 @@ class BootstrapError(RuntimeError):
     """Raised when the bootstrap call fails or returns an unusable response."""
 
 
+class BootstrapUnauthorizedError(BootstrapError):
+    """Raised on 401/403. Not retried and not served from the cache, so a
+    revoked token stops the bridge."""
+
+
+def _token_fingerprint(token: str) -> str:
+    """SHA-256 of the srlobo_token, stored with the cache instead of the token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 class SrLoboBootstrapClient:
     """Client for the one-time SrLobo Cloud bootstrap call that supplies
     MQTT credentials and installation entity config."""
 
-    def __init__(self, api_url: str, bootstrap_path: str, token: str) -> None:
+    def __init__(
+        self, api_url: str, bootstrap_path: str, token: str, cache_path: Optional[str] = None
+    ) -> None:
         """Stores the bootstrap endpoint and auth token for later use.
 
         Args:
             api_url: Base URL of the SrLobo Cloud API.
             bootstrap_path: Path of the bootstrap endpoint, appended to api_url.
             token: Bearer token used to authenticate the bootstrap request.
+            cache_path: File for the offline-startup cache. None disables it.
         """
         self.api_url = api_url.rstrip("/")
         self.bootstrap_path = bootstrap_path
         self.token = token
+        self.cache_path = cache_path
 
     def fetch(self) -> BootstrapConfig:
         """Fetches and parses the bootstrap response, retrying with backoff
-        on transient failures. Never logs the token or raw response, only
-        the redacted form at debug level.
+        on transient failures and falling back to the cache if all attempts
+        fail. Never logs the token or raw response, only the redacted form
+        at debug level.
 
         Returns:
             The parsed bootstrap configuration.
 
         Raises:
-            BootstrapError: If every retry attempt fails.
+            BootstrapUnauthorizedError: If the cloud rejects the token.
+            BootstrapError: If every attempt fails and there's no cache.
         """
         last_error: Optional[Exception] = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
                 return self._fetch_once()
+            except BootstrapUnauthorizedError:
+                self._drop_cache()
+                raise
             except (requests.RequestException, BootstrapError) as exc:
                 last_error = exc
                 if attempt == MAX_ATTEMPTS:
@@ -66,6 +93,11 @@ class SrLoboBootstrapClient:
                     delay,
                 )
                 time.sleep(delay)
+
+        cached = self._load_cache()
+        if cached is not None:
+            logger.warning("Bootstrap failed after %s attempts (%s), using cached response", MAX_ATTEMPTS, last_error)
+            return cached
         raise BootstrapError(f"Bootstrap failed after {MAX_ATTEMPTS} attempts") from last_error
 
     def _fetch_once(self) -> BootstrapConfig:
@@ -81,10 +113,59 @@ class SrLoboBootstrapClient:
         url = f"{self.api_url}{self.bootstrap_path}"
         headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
         response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT_S)
+        if response.status_code in (401, 403):
+            raise BootstrapUnauthorizedError(f"srlobo_token rejected ({response.status_code})")
         response.raise_for_status()
         payload = response.json()
         logger.debug("Bootstrap response: %s", redact(payload))
-        return self._parse(payload)
+        config = self._parse(payload)
+        self._save_cache(payload)
+        return config
+
+    def _save_cache(self, payload: Dict[str, Any]) -> None:
+        """Writes the cache. Failures are only logged.
+
+        Args:
+            payload: Raw bootstrap response body.
+        """
+        if not self.cache_path:
+            return
+        try:
+            write_json_atomic(
+                self.cache_path,
+                {"token_sha256": _token_fingerprint(self.token), "payload": payload},
+            )
+        except OSError:
+            logger.warning("Could not write bootstrap cache", exc_info=True)
+
+    def _load_cache(self) -> Optional[BootstrapConfig]:
+        """Loads the cache if it was written for the current token.
+
+        Returns:
+            The cached configuration, or None.
+        """
+        if not self.cache_path:
+            return None
+        cached = read_json(self.cache_path)
+        if not isinstance(cached, dict) or "payload" not in cached:
+            return None
+        if cached.get("token_sha256") != _token_fingerprint(self.token):
+            logger.warning("Bootstrap cache is for a different token, ignoring it")
+            return None
+        try:
+            return self._parse(cached["payload"])
+        except (BootstrapError, KeyError, TypeError, ValueError):
+            logger.warning("Bootstrap cache is unreadable, ignoring it", exc_info=True)
+            return None
+
+    def _drop_cache(self) -> None:
+        """Deletes the cache after the token was rejected."""
+        if not self.cache_path:
+            return
+        try:
+            remove_file(self.cache_path)
+        except OSError:
+            logger.warning("Could not delete bootstrap cache", exc_info=True)
 
     def _parse(self, payload: Dict[str, Any]) -> BootstrapConfig:
         """Converts the raw bootstrap JSON payload into a BootstrapConfig.

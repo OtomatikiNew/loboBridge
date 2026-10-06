@@ -70,3 +70,62 @@ def test_retries_then_raises_after_max_attempts():
     ), patch("srlobo_mqtt_bridge.bootstrap.time.sleep"):
         with pytest.raises(BootstrapError):
             _client().fetch()
+
+
+def _cached_client(tmp_path, token="secret-token") -> SrLoboBootstrapClient:
+    return SrLoboBootstrapClient(
+        api_url="https://srlobo.example",
+        bootstrap_path="/api/homeassistant/bootstrap",
+        token=token,
+        cache_path=str(tmp_path / "bootstrap_cache.json"),
+    )
+
+
+def _offline_fetch(client):
+    import requests
+
+    with patch(
+        "srlobo_mqtt_bridge.bootstrap.requests.get", side_effect=requests.ConnectionError("offline")
+    ), patch("srlobo_mqtt_bridge.bootstrap.time.sleep"):
+        return client.fetch()
+
+
+def test_offline_startup_uses_cached_response(tmp_path):
+    with patch("srlobo_mqtt_bridge.bootstrap.requests.get", return_value=_mock_response(VALID_PAYLOAD)):
+        _cached_client(tmp_path).fetch()
+
+    config = _offline_fetch(_cached_client(tmp_path))
+    assert config.installation_id == "club_109"
+    assert config.mqtt.broker == "mqtt.srlobo.example"
+
+
+def test_cache_never_stores_the_token_itself(tmp_path):
+    with patch("srlobo_mqtt_bridge.bootstrap.requests.get", return_value=_mock_response(VALID_PAYLOAD)):
+        _cached_client(tmp_path).fetch()
+    assert "secret-token" not in (tmp_path / "bootstrap_cache.json").read_text()
+
+
+def test_cache_from_another_token_is_ignored(tmp_path):
+    # clubs are cloned from the master backup, cache and all
+    with patch("srlobo_mqtt_bridge.bootstrap.requests.get", return_value=_mock_response(VALID_PAYLOAD)):
+        _cached_client(tmp_path, token="master-token").fetch()
+
+    with pytest.raises(BootstrapError):
+        _offline_fetch(_cached_client(tmp_path, token="clone-token"))
+
+
+def test_unauthorized_is_not_retried_and_drops_the_cache(tmp_path):
+    from srlobo_mqtt_bridge.bootstrap import BootstrapUnauthorizedError
+
+    with patch("srlobo_mqtt_bridge.bootstrap.requests.get", return_value=_mock_response(VALID_PAYLOAD)):
+        _cached_client(tmp_path).fetch()
+
+    rejected = MagicMock()
+    rejected.status_code = 401
+    with patch("srlobo_mqtt_bridge.bootstrap.requests.get", return_value=rejected) as get, patch(
+        "srlobo_mqtt_bridge.bootstrap.time.sleep"
+    ):
+        with pytest.raises(BootstrapUnauthorizedError):
+            _cached_client(tmp_path).fetch()
+    assert get.call_count == 1
+    assert not (tmp_path / "bootstrap_cache.json").exists()
