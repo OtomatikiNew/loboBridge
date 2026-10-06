@@ -10,8 +10,9 @@
 # is the `version:` in srlobo_mqtt_bridge/config.yaml. An image that already
 # exists for that version is not rebuilt: bump the version to release.
 #
-# Each image is smoke-tested before it is pushed: s6 `with-contenv` (used by
-# run.sh) must exist and the bridge package must import with its dependencies.
+# The image ships the bridge compiled to a native binary with Nuitka
+# (.github/release/Dockerfile), not its Python source. Each image is
+# smoke-tested before it is pushed.
 #
 # Required secrets (org or repo level):
 #   LUPOS_PUBLISH_USER   lupos-release-bot
@@ -54,6 +55,8 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
+    # Nuitka compiles to C; under QEMU (aarch64) this takes a while.
+    timeout-minutes: 120
     strategy:
       fail-fast: true
       matrix:
@@ -103,6 +106,7 @@ jobs:
         if: steps.exists.outputs.already == 'false'
         with:
           context: ${{ env.ADDON_DIR }}
+          file: .github/release/Dockerfile
           platforms: ${{ matrix.arch.platform }}
           build-args: |
             BUILD_FROM=${{ env.BASE_IMAGE }}/${{ matrix.arch.name }}:${{ env.BASE_IMAGE_VERSION }}
@@ -120,9 +124,24 @@ jobs:
       - name: Smoke test
         if: steps.exists.outputs.already == 'false'
         run: |
+          # 1) s6 with-contenv exists (run.sh needs it).
+          # 2) No bridge source (.py) shipped in the image.
+          # 3) The compiled binary starts and gets as far as option validation,
+          #    which proves every module and dependency was compiled in.
           docker run --rm --platform "${{ matrix.arch.platform }}" --entrypoint /bin/sh \
-            "${{ steps.meta.outputs.ref }}" -c \
-            'test -x /usr/bin/with-contenv && cd /app && python3 -c "import srlobo_mqtt_bridge.main" && echo smoke-ok'
+            "${{ steps.meta.outputs.ref }}" -c '
+              set -e
+              test -x /usr/bin/with-contenv
+              test -x /app/automation-bridge
+              if find / -xdev \( -name "bootstrap.py" -o -name "mqtt_client.py" -o -name "commands.py" \) 2>/dev/null | grep -q .; then
+                echo "bridge source found in image" >&2; exit 1
+              fi
+              mkdir -p /data && echo "{}" > /data/options.json
+              out="$(/app/automation-bridge 2>&1 || true)"
+              echo "$out" | tail -5
+              echo "$out" | grep -q "Missing required option: srlobo_token"
+              echo smoke-ok
+            '
 
       - name: Push
         if: steps.exists.outputs.already == 'false'
