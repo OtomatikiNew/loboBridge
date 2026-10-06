@@ -9,10 +9,12 @@ payload.
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
+from .commands import CommandHandler
 from .config import AddonOptions
 from .discovery import CourtDiscovery, DiscoveryState, DoorDiscovery
+from .entity_registry import court_number
 from .ha_client import HomeAssistantClient
 from .mqtt_client import BridgeMqttClient
 
@@ -74,6 +76,60 @@ class StateCache:
         return self._states.get(entity_id)
 
 
+# Entity id fragments for the lux and Wi-Fi AP readings.
+_LUX_ENTITY_HINTS = ("lux", "illuminance")
+_AP_ENTITY_HINTS = ("ssid", "wifi_ap")
+_VALID_MODES = ("AUTO", "MANUAL", "LUX_LOOP")
+
+
+def _firmware_version(firmware: Dict[str, str], member_entity_ids: List[str]) -> Optional[str]:
+    """firmware_version for a state payload (ADR-018). If the devices run
+    different versions, all of them are listed.
+
+    Args:
+        firmware: Entity id to firmware version.
+        member_entity_ids: The court's or door's member entities.
+
+    Returns:
+        The version(s), comma-separated, or None.
+    """
+    versions = sorted({firmware[entity_id] for entity_id in member_entity_ids if entity_id in firmware})
+    return ", ".join(versions) if versions else None
+
+
+def _find_lux(entities: Dict[str, str]) -> Optional[float]:
+    """First numeric reading from an entity whose id looks like a lux sensor.
+
+    Args:
+        entities: Entity id to state, for a court's member devices.
+
+    Returns:
+        The lux value, or None.
+    """
+    for entity_id, value in entities.items():
+        if any(hint in entity_id for hint in _LUX_ENTITY_HINTS):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _find_wifi_ap(entities: Dict[str, str]) -> Optional[str]:
+    """Wi-Fi AP name from the first entity whose id looks like one.
+
+    Args:
+        entities: Entity id to state, for a court's member devices.
+
+    Returns:
+        The AP name, or None.
+    """
+    for entity_id, value in entities.items():
+        if any(hint in entity_id for hint in _AP_ENTITY_HINTS) and value not in ("unknown", "unavailable", ""):
+            return value
+    return None
+
+
 def _member_entities_dict(cache: StateCache, entity_ids: list) -> Dict[str, str]:
     """Builds an entity_id -> state map for a device's member entities,
     from whatever is currently cached.
@@ -103,6 +159,7 @@ class TelemetryPublisher:
         mqtt: BridgeMqttClient,
         ha: HomeAssistantClient,
         options: AddonOptions,
+        commands: CommandHandler,
     ) -> None:
         """Stores the collaborators needed to build and publish telemetry.
 
@@ -110,14 +167,26 @@ class TelemetryPublisher:
             mqtt: Client used to publish telemetry payloads.
             ha: Client used to read calibration helper entity state.
             options: Add-on options, used to resolve the lux-reference entity template.
+            commands: Source of each door's last executed action.
         """
         self._mqtt = mqtt
         self._ha = ha
         self._options = options
+        self._commands = commands
         self._cache = StateCache()
+        self._firmware: Dict[str, str] = {}
         self._discovery: Optional[DiscoveryState] = None
         self._debounce_timers: Dict[str, threading.Timer] = {}
         self._lock = threading.Lock()
+
+    def set_firmware(self, firmware: Dict[str, str]) -> None:
+        """Sets the entity id to firmware version map, refreshed on every
+        rediscovery.
+
+        Args:
+            firmware: Entity id to firmware version.
+        """
+        self._firmware = dict(firmware)
 
     def on_rediscover(self, discovery: DiscoveryState) -> None:
         """Applies a fresh discovery snapshot and immediately publishes
@@ -160,7 +229,7 @@ class TelemetryPublisher:
 
         Args:
             domain: "court" or "door".
-            index: 1-based court or door index.
+            index: 0-based court or door index.
         """
         key = f"{domain}:{index}"
         with self._lock:
@@ -174,10 +243,10 @@ class TelemetryPublisher:
             timer.start()
 
     def _publish_court(self, index: int) -> None:
-        """Builds and publishes telemetry for one court, if still known.
+        """Publishes telemetry and state for one court, if still known.
 
         Args:
-            index: 1-based court index.
+            index: 0-based court index.
         """
         if self._discovery is None:
             return
@@ -186,12 +255,13 @@ class TelemetryPublisher:
             return
         payload = self._build_court_payload(court)
         self._mqtt.publish_court_telemetry(index, payload)
+        self._mqtt.publish_court_state(index, self._build_court_state_payload(payload))
 
     def _publish_door(self, index: int) -> None:
-        """Builds and publishes telemetry for one door, if still known.
+        """Publishes telemetry and state for one door, if still known.
 
         Args:
-            index: 1-based door index.
+            index: 0-based door index.
         """
         if self._discovery is None:
             return
@@ -200,6 +270,7 @@ class TelemetryPublisher:
             return
         payload = self._build_door_payload(door)
         self._mqtt.publish_door_telemetry(index, payload)
+        self._mqtt.publish_door_state(index, self._build_door_state_payload(index, payload))
 
     def _build_court_payload(self, court: CourtDiscovery) -> Dict[str, Any]:
         """Assembles a court's telemetry payload from cached state plus
@@ -263,6 +334,110 @@ class TelemetryPublisher:
             "updated_at": _utc_now_iso(),
         }
 
+    def _build_court_state_payload(self, telemetry: Dict[str, Any]) -> Dict[str, Any]:
+        """Builds courts/{n}/state from the telemetry payload. Keep the
+        rules in sync with the backend's courtTelemetryDerivation.ts.
+
+        Args:
+            telemetry: The court's telemetry payload (needs court_index).
+
+        Returns:
+            The state payload.
+        """
+        helper = telemetry.get("helper", {}) or {}
+        light_on = helper.get("state") == "on"
+        brightness_pct = helper.get("brightness_pct")
+
+        power_w: Optional[float] = None
+        has_power = False
+        saw_unavailable = False
+        worst_rssi: Optional[int] = None
+        all_entities: Dict[str, str] = {}
+
+        for device in telemetry.get("devices", []):
+            for entity_id, value in (device.get("entities") or {}).items():
+                all_entities[entity_id] = value
+                if value == "unavailable":
+                    saw_unavailable = True
+                if "_potencia" in entity_id:
+                    try:
+                        power_w = (power_w or 0) + float(value)
+                        has_power = True
+                    except (TypeError, ValueError):
+                        pass
+                if "rssi" in entity_id or "signal" in entity_id:
+                    try:
+                        rssi = int(value)
+                        if worst_rssi is None or rssi < worst_rssi:
+                            worst_rssi = rssi
+                    except (TypeError, ValueError):
+                        pass
+
+        return {
+            "light_on": light_on,
+            "brightness_pct": brightness_pct if isinstance(brightness_pct, (int, float)) else None,
+            "power_w": power_w if has_power else None,
+            "lux_measured": _find_lux(all_entities),
+            "wifi_rssi": worst_rssi,
+            "wifi_ap": _find_wifi_ap(all_entities),
+            "mode": self._device_reported_mode(telemetry.get("court_index")),
+            "shelly_online": not saw_unavailable,
+            "firmware_version": _firmware_version(
+                self._firmware, [device.get("member_entity_id") for device in telemetry.get("devices", [])]
+            ),
+            "updated_at": _utc_now_iso(),
+        }
+
+    def _device_reported_mode(self, court_index: Optional[int]) -> Optional[str]:
+        """Mode from the court's mode select helper. Values that aren't
+        AUTO/MANUAL/LUX_LOOP are reported as None.
+
+        Args:
+            court_index: 0-based court index.
+
+        Returns:
+            The mode, or None.
+        """
+        if court_index is None:
+            return None
+        cached = self._cache.get(self._options.mode_select_entity_template.format(n=court_number(court_index)))
+        if cached is None:
+            return None
+        state = cached.get("state")
+        return state if state in _VALID_MODES else None
+
+    def _build_door_state_payload(self, index: int, telemetry: Dict[str, Any]) -> Dict[str, Any]:
+        """Builds doors/{n}/state from the telemetry payload plus the last
+        executed action.
+
+        Args:
+            index: 0-based door index.
+            telemetry: The door's telemetry payload.
+
+        Returns:
+            The state payload.
+        """
+        lock = telemetry.get("lock", {}) or {}
+        state = lock.get("state")
+        locked = True if state == "locked" else False if state == "unlocked" else None
+
+        saw_unavailable = any(
+            value == "unavailable"
+            for device in telemetry.get("devices", [])
+            for value in (device.get("entities") or {}).values()
+        )
+
+        return {
+            "locked": locked,
+            "online": (not saw_unavailable) if lock else None,
+            "last_action": self._commands.last_door_action(index),
+            "firmware_version": _firmware_version(
+                self._firmware,
+                [lock.get("entity_id")] + [device.get("member_entity_id") for device in telemetry.get("devices", [])],
+            ),
+            "updated_at": _utc_now_iso(),
+        }
+
     def _read_calibration(self, court_index: int) -> Optional[Dict[str, Any]]:
         """Reads reference_lux/reference_power_pct/calibrated_at off the
         configurable lux-reference entity. Best-effort since the real
@@ -270,13 +445,13 @@ class TelemetryPublisher:
         calibrated yet", not an error.
 
         Args:
-            court_index: 1-based court index.
+            court_index: 0-based court index.
 
         Returns:
             A dict with reference_lux/reference_power_pct/calibrated_at, or
             None if the entity is missing or its state isn't numeric.
         """
-        entity_id = self._options.lux_reference_entity_template.format(n=court_index)
+        entity_id = self._options.lux_reference_entity_template.format(n=court_number(court_index))
         state = self._ha.get_state(entity_id)
         if state is None:
             return None
