@@ -1,0 +1,13 @@
+name: Debug base image (temporary)
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe apk in base image
+        run: |
+          docker run --rm ghcr.io/hassio-addons/base/amd64:17.2.4 sh -c '
+            . /etc/os-release; echo "OS=$PRETTY_NAME"; echo "REPOS=$(tr "\n" " " < /etc/apk/repositories)"
+            apk add --no-cache python3 python3-dev py3-pip gcc g++ musl-dev patchelf ccache libffi-dev 2>&1 | tail -8
+          ' > probe.txt 2>&1 || true
+          echo "::error title=probe::$(tr '\n' '|' < probe.txt)"
