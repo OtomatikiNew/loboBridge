@@ -54,9 +54,22 @@ def build_dashboard_config(
         name = court_names.get(index) or f"Pista {number}"
         if helper not in existing_entities:
             continue
+        # ADR-026: the light tile is status-only -- no tap/slider, since
+        # anything that can turn_on/turn_off this light bypasses the local
+        # automation the same way the bridge itself no longer does. The
+        # auto/manual switch is the real, safe interactive control point.
         court_cards: List[Dict[str, Any]] = [
-            {"type": "tile", "entity": helper, "name": name, "features": [{"type": "light-brightness"}]}
+            {
+                "type": "tile",
+                "entity": helper,
+                "name": name,
+                "tap_action": {"action": "none"},
+                "icon_tap_action": {"action": "none"},
+            }
         ]
+        auto_manual_entity_id = options.local_auto_manual_entity_template.format(n=number)
+        if auto_manual_entity_id in existing_entities:
+            court_cards.append({"type": "tile", "entity": auto_manual_entity_id, "name": f"{name} - Auto/Manual"})
         helpers = [
             template.format(n=number)
             for template in (options.mode_select_entity_template, options.lux_reference_entity_template)

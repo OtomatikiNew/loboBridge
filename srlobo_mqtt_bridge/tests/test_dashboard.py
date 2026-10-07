@@ -66,6 +66,30 @@ def test_build_config_falls_back_to_numbered_names():
     assert config["views"][0]["cards"][0]["cards"][0]["name"] == "Pista 2"
 
 
+def test_light_tile_has_no_tap_interaction():
+    """ADR-026: the light tile is status-only. A tappable brightness slider
+    on the dashboard would let someone bypass the local automation exactly
+    like the bridge itself no longer does."""
+    config = build_dashboard_config([0], {}, {"light.luces_padel_1"}, _options())
+    light_tile = config["views"][0]["cards"][0]["cards"][0]
+    assert "features" not in light_tile
+    assert light_tile["tap_action"] == {"action": "none"}
+
+
+def test_auto_manual_tile_shown_when_entity_exists():
+    config = build_dashboard_config(
+        [0], {}, {"light.luces_padel_1", "input_boolean.auto_manual_luz_1"}, _options()
+    )
+    court_card = config["views"][0]["cards"][0]["cards"]
+    assert {"type": "tile", "entity": "input_boolean.auto_manual_luz_1", "name": "Pista 1 - Auto/Manual"} in court_card
+
+
+def test_auto_manual_tile_omitted_when_entity_missing():
+    config = build_dashboard_config([0], {}, {"light.luces_padel_1"}, _options())
+    court_card = config["views"][0]["cards"][0]["cards"]
+    assert all("auto_manual_luz" not in str(card) for card in court_card)
+
+
 def test_missing_court_entities_lists_blueprint_gaps():
     missing = missing_court_entities([0], {"light.luces_padel_1", "input_select.modo_pista_1"}, _options())
     assert missing == ["input_number.referencia_lux_pista_1", "input_button.calibrar_pista_1"]
