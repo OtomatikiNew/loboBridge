@@ -1,9 +1,11 @@
 name: "SrLobo MQTT Bridge"
 description: "Standard MQTT bridge between SrLobo Cloud and Home Assistant"
-version: "0.2.2"
+version: "0.2.3"
 slug: "srlobo_mqtt_bridge"
 init: false
 homeassistant_api: true
+hassio_api: true
+hassio_role: manager
 # "want": if the club's HA installation has no local MQTT broker,
 # the bridge must keep working without it
 # this only enables HA-native MQTT Discovery (mqtt_discovery.py) when a
