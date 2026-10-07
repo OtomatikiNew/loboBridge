@@ -24,6 +24,7 @@ CORE_WS_URL = "ws://supervisor/core/websocket"
 
 HTTP_TIMEOUT_S = 10
 WS_CONNECT_TIMEOUT_S = 10
+WS_LISTEN_TIMEOUT_S = 60
 WS_RECONNECT_DELAY_S = 10
 
 
@@ -340,6 +341,7 @@ class HAStateListener:
             self._subscribe(ws)
             self._on_reconnect()
             logger.info("HA WebSocket connected and subscribed to state_changed")
+            ws.settimeout(WS_LISTEN_TIMEOUT_S)
             while not self._stop.is_set():
                 raw = ws.recv()
                 if not raw:
