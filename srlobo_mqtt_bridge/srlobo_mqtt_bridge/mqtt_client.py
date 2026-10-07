@@ -45,8 +45,8 @@ class BridgeMqttClient:
         self._client.on_disconnect = self._on_disconnect
 
         if mqtt_config.username:
-            # Preferred path: username/password via an AWS IoT custom
-            # authorizer. Never logged, see logging_setup.redact.
+            # Preferred path: username/password on the Mosquitto broker.
+            # Never logged, see logging_setup.redact.
             self._client.username_pw_set(mqtt_config.username, mqtt_config.password)
         if mqtt_config.tls:
             if mqtt_config.ca_cert or mqtt_config.client_cert or mqtt_config.client_key:
