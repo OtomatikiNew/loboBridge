@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 OPTIONS_PATH = "/data/options.json"
+DEFAULT_REENABLE_MANUFACTURERS = ("Shelly", "Nuki")
 
 
 @dataclass
@@ -67,10 +68,13 @@ class AddonOptions:
     bootstrap_path: str
     log_level: str
     # No confirmed naming convention for these entities, so they're
-    # configurable instead of hardcoded. {n} = court's 1-based index.
+    # configurable instead of hardcoded. {n} = court number, from 1.
     mode_select_entity_template: str = "input_select.modo_pista_{n}"
     lux_reference_entity_template: str = "input_number.referencia_lux_pista_{n}"
     calibration_trigger_entity_template: str = "input_button.calibrar_pista_{n}"
+    # Devices from these manufacturers get their disabled entities
+    # re-enabled (device_registry.py). Substring match, case-insensitive.
+    reenable_manufacturers: List[str] = field(default_factory=lambda: list(DEFAULT_REENABLE_MANUFACTURERS))
 
 
 def load_options() -> AddonOptions:
@@ -104,4 +108,5 @@ def load_options() -> AddonOptions:
         calibration_trigger_entity_template=raw.get(
             "calibration_trigger_entity_template", "input_button.calibrar_pista_{n}"
         ),
+        reenable_manufacturers=list(raw.get("reenable_manufacturers", DEFAULT_REENABLE_MANUFACTURERS)),
     )

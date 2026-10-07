@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 CourtCommandHandler = Callable[[int, Dict[str, Any]], None]
 DoorCommandHandler = Callable[[int, Dict[str, Any]], None]
 VenueConfigHandler = Callable[[Dict[str, Any]], None]
+ScheduleHandler = Callable[[Dict[str, Any]], None]
+CloudSignalHandler = Callable[[], None]
 
 
 class BridgeMqttClient:
@@ -62,7 +64,8 @@ class BridgeMqttClient:
         self._court_command_handler: Optional[CourtCommandHandler] = None
         self._door_command_handler: Optional[DoorCommandHandler] = None
         self._venue_config_handler: Optional[VenueConfigHandler] = None
-        self._schedule_handler: Optional[Callable[[Dict[str, Any]], None]] = None
+        self._schedule_handler: Optional[ScheduleHandler] = None
+        self._cloud_signal_handler: Optional[CloudSignalHandler] = None
 
     def on_court_command(self, handler: CourtCommandHandler) -> None:
         """Registers the callback invoked for incoming court commands.
@@ -88,10 +91,29 @@ class BridgeMqttClient:
         """
         self._venue_config_handler = handler
 
+    def on_schedule(self, handler: ScheduleHandler) -> None:
+        """Registers the callback for the retained offline schedule (ADR-013).
+
+        Args:
+            handler: Called with the decoded schedule payload.
+        """
+        self._schedule_handler = handler
+
+    def on_cloud_signal(self, handler: CloudSignalHandler) -> None:
+        """Registers the callback for messages that show the cloud is up:
+        the heartbeat and court/door commands. Retained topics don't count,
+        the broker replays them on resubscribe even if the backend is down.
+
+        Args:
+            handler: Called with no arguments.
+        """
+        self._cloud_signal_handler = handler
+
     def connect(self) -> None:
-        """Opens the MQTT connection to the configured broker."""
+        """Starts connecting without blocking, so the bridge still starts
+        when the broker is unreachable. paho retries once loop_start() runs."""
         logger.info("Connecting to MQTT broker %s:%s", self._config.broker, self._config.port)
-        self._client.connect(self._config.broker, self._config.port, keepalive=60)
+        self._client.connect_async(self._config.broker, self._config.port, keepalive=60)
 
     def loop_start(self) -> None:
         """Starts paho's background network loop thread."""
@@ -119,6 +141,8 @@ class BridgeMqttClient:
             f"{self.base_topic}/courts/+/command",
             f"{self.base_topic}/doors/+/command",
             f"{self.base_topic}/venue/config",
+            f"{self.base_topic}/schedule",
+            f"{self.base_topic}/cloud/heartbeat",
         ]
         for topic in topics:
             client.subscribe(topic, qos=1)
@@ -175,15 +199,25 @@ class BridgeMqttClient:
             if self._schedule_handler:
                 self._schedule_handler(payload)
             return
+        if parts == ["cloud", "heartbeat"]:
+            self._signal_cloud_alive()
+            return
         if len(parts) == 3 and parts[0] == "courts" and parts[2] == "command":
+            self._signal_cloud_alive()
             if self._court_command_handler:
                 self._court_command_handler(int(parts[1]), payload)
             return
         if len(parts) == 3 and parts[0] == "doors" and parts[2] == "command":
+            self._signal_cloud_alive()
             if self._door_command_handler:
                 self._door_command_handler(int(parts[1]), payload)
             return
         logger.debug("Ignoring message on unrecognized topic %s", topic)
+
+    def _signal_cloud_alive(self) -> None:
+        """Calls the cloud-signal handler, if set."""
+        if self._cloud_signal_handler:
+            self._cloud_signal_handler()
 
     # --- publish helpers ---
 
@@ -203,7 +237,7 @@ class BridgeMqttClient:
         """Publishes a court's raw telemetry payload.
 
         Args:
-            index: 1-based court index.
+            index: 0-based court index.
             payload: Telemetry payload to publish.
         """
         self._publish(f"courts/{index}/telemetry", payload, retain=True)
@@ -212,7 +246,7 @@ class BridgeMqttClient:
         """Publishes a door's raw telemetry payload.
 
         Args:
-            index: 1-based door index.
+            index: 0-based door index.
             payload: Telemetry payload to publish.
         """
         self._publish(f"doors/{index}/telemetry", payload, retain=True)
@@ -221,7 +255,7 @@ class BridgeMqttClient:
         """Publishes a court's state payload.
 
         Args:
-            index: 1-based court index.
+            index: 0-based court index.
             payload: State payload to publish.
         """
         self._publish(f"courts/{index}/state", payload, retain=True)
@@ -230,7 +264,7 @@ class BridgeMqttClient:
         """Publishes a door's state payload.
 
         Args:
-            index: 1-based door index.
+            index: 0-based door index.
             payload: State payload to publish.
         """
         self._publish(f"doors/{index}/state", payload, retain=True)
@@ -239,7 +273,7 @@ class BridgeMqttClient:
         """Publishes a court command's ack payload.
 
         Args:
-            index: 1-based court index.
+            index: 0-based court index.
             payload: Ack payload to publish.
         """
         self._publish(f"courts/{index}/ack", payload, retain=False)

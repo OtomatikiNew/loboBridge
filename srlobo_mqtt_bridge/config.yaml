@@ -26,6 +26,9 @@ options:
   mode_select_entity_template: "input_select.modo_pista_{n}"
   lux_reference_entity_template: "input_number.referencia_lux_pista_{n}"
   calibration_trigger_entity_template: "input_button.calibrar_pista_{n}"
+  reenable_manufacturers:
+    - "Shelly"
+    - "Nuki"
 
 schema:
   srlobo_token: password
@@ -35,6 +38,8 @@ schema:
   mode_select_entity_template: str
   lux_reference_entity_template: str
   calibration_trigger_entity_template: str
+  reenable_manufacturers:
+    - str
 
 map:
   - ssl:rw

@@ -13,17 +13,30 @@ from typing import Dict, Set
 from .config import BootstrapConfig
 
 
+def court_number(index: int) -> int:
+    """MQTT/bootstrap court indexes are 0-based (ADR-002) but HA entities
+    are numbered from 1 (`light.luces_padel_1` is the first court).
+
+    Args:
+        index: 0-based court index.
+
+    Returns:
+        The court number used in HA entity names.
+    """
+    return index + 1
+
+
 def court_helper_entity_id(index: int) -> str:
     """Fixed naming convention for the installer-created light group
     helper. No config needed beyond the index.
 
     Args:
-        index: 1-based court index.
+        index: 0-based court index.
 
     Returns:
         The light group helper's entity id.
     """
-    return f"light.luces_padel_{index}"
+    return f"light.luces_padel_{court_number(index)}"
 
 
 class EntityRegistry:
@@ -60,7 +73,7 @@ class EntityRegistry:
         """Looks up the configured HA lock entity id for a door.
 
         Args:
-            index: 1-based door index.
+            index: 0-based door index.
 
         Returns:
             The door's HA lock entity id.

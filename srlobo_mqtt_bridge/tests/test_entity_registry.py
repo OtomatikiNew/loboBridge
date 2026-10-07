@@ -48,3 +48,8 @@ def test_door_entity_id_raises_for_unconfigured_door():
         assert False, "expected KeyError"
     except KeyError:
         pass
+
+
+def test_court_helper_uses_one_based_number_for_zero_based_wire_index():
+    assert court_helper_entity_id(0) == "light.luces_padel_1"
+    assert court_helper_entity_id(1) == "light.luces_padel_2"

@@ -131,6 +131,23 @@ class Discoverer:
 
         return state
 
+    def seed_entity_ids(self) -> List[str]:
+        """Light group members of every court plus every door lock. Their
+        devices get the disabled-entity pass before discovery.
+
+        Returns:
+            Entity ids.
+        """
+        seeds: List[str] = []
+        for court in self._bootstrap.courts:
+            helper_state = self._ha.get_state(court_helper_entity_id(court.index))
+            if helper_state is not None:
+                seeds.extend(helper_state.get("attributes", {}).get("entity_id") or [])
+        for door in self._bootstrap.doors:
+            if door.entity_id:
+                seeds.append(door.entity_id)
+        return seeds
+
     def _discover_devices(self, helper_entity_id: str, all_states: List[Dict]) -> List[MemberDevice]:
         """Given a top-level helper (a court's light group) or a standalone
         entity (a door's lock), finds its member entities: a light group's
