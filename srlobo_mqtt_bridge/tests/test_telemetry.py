@@ -74,7 +74,7 @@ def test_build_court_payload_includes_calibration_when_present():
     court = CourtDiscovery(index=0, helper_entity_id="light.luces_padel_1", devices=[])
     payload = publisher._build_court_payload(court)
 
-    ha.get_state.assert_called_with("input_number.referencia_lux_pista_1")
+    ha.get_state.assert_called_with("input_number.referencia_de_lux_pista_1")
     assert payload["reference_lux"] == 320
     assert payload["reference_power_pct"] == 65
     assert payload["calibrated_at"] == "2026-09-17T10:02:15Z"
@@ -273,6 +273,11 @@ def test_build_court_state_payload_ignores_unusable_lux_and_ap_values():
 
 def test_build_court_state_payload_reads_mode_from_helper_cache():
     publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
+    from dataclasses import replace
+
+    publisher = TelemetryPublisher(
+        MagicMock(), MagicMock(), replace(_options(), mode_select_entity_template="input_select.modo_pista_{n}"), MagicMock()
+    )
     publisher._cache.seed([{"entity_id": "input_select.modo_pista_1", "state": "LUX_LOOP"}])
     telemetry_payload = {"court_index": 0, "helper": {"state": "on"}, "devices": []}
 
@@ -282,7 +287,11 @@ def test_build_court_state_payload_reads_mode_from_helper_cache():
 
 
 def test_build_court_state_payload_drops_mode_outside_contract_enum():
-    publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
+    from dataclasses import replace
+
+    publisher = TelemetryPublisher(
+        MagicMock(), MagicMock(), replace(_options(), mode_select_entity_template="input_select.modo_pista_{n}"), MagicMock()
+    )
     publisher._cache.seed([{"entity_id": "input_select.modo_pista_1", "state": "Automatico"}])
     telemetry_payload = {"court_index": 0, "helper": {"state": "on"}, "devices": []}
 
@@ -364,3 +373,17 @@ def test_auto_manual_switch_change_republishes_its_court():
     publisher._debounced_publish.reset_mock()
     publisher.on_state_changed({"entity_id": "input_boolean.auto_manual_luz_9", "new_state": {"state": "off"}})
     publisher._debounced_publish.assert_not_called()
+
+
+def test_lux_regulation_switch_on_is_reported_as_lux_loop():
+    publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
+    publisher._cache.seed(
+        [
+            {"entity_id": "input_boolean.regulacion_por_lux_pista_1", "state": "on"},
+            {"entity_id": "input_boolean.regulacion_por_lux_pista_2", "state": "off"},
+        ]
+    )
+    on = publisher._build_court_state_payload({"court_index": 0, "helper": {}, "devices": []})
+    off = publisher._build_court_state_payload({"court_index": 1, "helper": {}, "devices": []})
+    assert on["mode"] == "LUX_LOOP"
+    assert off["mode"] is None

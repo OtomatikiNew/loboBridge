@@ -69,9 +69,9 @@ class AddonOptions:
     log_level: str
     # No confirmed naming convention for these entities, so they're
     # configurable instead of hardcoded. {n} = court number, from 1.
-    mode_select_entity_template: str = "input_select.modo_pista_{n}"
-    lux_reference_entity_template: str = "input_number.referencia_lux_pista_{n}"
-    calibration_trigger_entity_template: str = "input_button.calibrar_pista_{n}"
+    mode_select_entity_template: str = "input_boolean.regulacion_por_lux_pista_{n}"
+    lux_reference_entity_template: str = "input_number.referencia_de_lux_pista_{n}"
+    calibration_trigger_entity_template: str = "input_button.fijar_referencia_pista_{n}"
     court_signal_entity_template: str = "binary_sensor.pista_{n}"
     local_auto_manual_entity_template: str = "input_boolean.auto_manual_luz_{n}"
     # Devices from these manufacturers get their disabled entities
@@ -102,13 +102,13 @@ def load_options() -> AddonOptions:
         bootstrap_path=raw.get("bootstrap_path", "/api/homeassistant/bootstrap"),
         log_level=raw.get("log_level", "info"),
         mode_select_entity_template=raw.get(
-            "mode_select_entity_template", "input_select.modo_pista_{n}"
+            "mode_select_entity_template", "input_boolean.regulacion_por_lux_pista_{n}"
         ),
         lux_reference_entity_template=raw.get(
-            "lux_reference_entity_template", "input_number.referencia_lux_pista_{n}"
+            "lux_reference_entity_template", "input_number.referencia_de_lux_pista_{n}"
         ),
         calibration_trigger_entity_template=raw.get(
-            "calibration_trigger_entity_template", "input_button.calibrar_pista_{n}"
+            "calibration_trigger_entity_template", "input_button.fijar_referencia_pista_{n}"
         ),
         court_signal_entity_template=raw.get("court_signal_entity_template", "binary_sensor.pista_{n}"),
         local_auto_manual_entity_template=raw.get(

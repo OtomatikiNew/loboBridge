@@ -45,7 +45,7 @@ def test_build_config_uses_court_names_and_only_existing_entities():
     config = build_dashboard_config(
         court_indexes=[0, 1],
         door_entities={0: "lock.puerta_1"},
-        existing_entities={"light.luces_padel_1", "input_select.modo_pista_1", "lock.puerta_1"},
+        existing_entities={"light.luces_padel_1", "input_boolean.regulacion_por_lux_pista_1", "lock.puerta_1"},
         options=_options(),
         venue=_venue(),
     )
@@ -55,7 +55,7 @@ def test_build_config_uses_court_names_and_only_existing_entities():
     court_card = cards[0]["cards"]
     assert court_card[0]["entity"] == "light.luces_padel_1"
     assert court_card[0]["name"] == "Pista Central"
-    assert court_card[1]["entities"] == ["input_select.modo_pista_1"]  # lux reference missing, left out
+    assert court_card[1]["entities"] == ["input_boolean.regulacion_por_lux_pista_1"]  # lux reference missing, left out
     assert all("light.luces_padel_2" not in str(card) for card in cards)  # court 2 helper missing
     assert {"type": "tile", "entity": "lock.puerta_1"} in cards
     assert cards[-1]["entities"] == [MODE_ENTITY_ID]
@@ -91,8 +91,8 @@ def test_auto_manual_tile_omitted_when_entity_missing():
 
 
 def test_missing_court_entities_lists_blueprint_gaps():
-    missing = missing_court_entities([0], {"light.luces_padel_1", "input_select.modo_pista_1"}, _options())
-    assert missing == ["input_number.referencia_lux_pista_1", "input_button.calibrar_pista_1"]
+    missing = missing_court_entities([0], {"light.luces_padel_1", "input_boolean.regulacion_por_lux_pista_1"}, _options())
+    assert missing == ["input_number.referencia_de_lux_pista_1", "input_button.fijar_referencia_pista_1"]
 
 
 def test_provisioner_creates_dashboard_once_and_saves_config():

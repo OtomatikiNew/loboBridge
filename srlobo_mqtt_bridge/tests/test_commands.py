@@ -15,7 +15,7 @@ def _options() -> AddonOptions:
         bootstrap_path="/x",
         log_level="info",
         mode_select_entity_template="input_select.modo_pista_{n}",
-        calibration_trigger_entity_template="input_button.calibrar_pista_{n}",
+        calibration_trigger_entity_template="input_button.fijar_referencia_pista_{n}",
     )
 
 
@@ -97,7 +97,7 @@ def test_lux_loop_activation_seeds_lux_target():
         0, {"command_id": "cmd-lux-1", "mode": "LUX_LOOP", "lux_target": 320}
     )
     ha.call_service.assert_any_call(
-        "input_number", "set_value", "input_number.referencia_lux_pista_1", {"value": 320}
+        "input_number", "set_value", "input_number.referencia_de_lux_pista_1", {"value": 320}
     )
 
 
@@ -131,7 +131,8 @@ def test_calibrate_action_calls_input_button_press():
     handler.handle_court_command(
         0, {"command_id": "cmd-4", "action": "calibrate", "calibration_power_pct": 65}
     )
-    ha.call_service.assert_called_with("input_button", "press", "input_button.calibrar_pista_1", {"power_pct": 65})
+    # input_button.press takes no data; the reference is captured at the current light level.
+    ha.call_service.assert_called_with("input_button", "press", "input_button.fijar_referencia_pista_1")
 
 
 def test_court_command_for_unknown_index_is_ignored():
@@ -199,3 +200,28 @@ def test_last_door_action_not_recorded_for_unknown_action():
     handler, ha, mqtt = _handler()
     handler.handle_door_command(0, {"command_id": "cmd-14", "action": "explode"})
     assert handler.last_door_action(0) is None
+
+
+def test_mode_on_boolean_helper_turns_lux_regulation_on_only_for_lux_loop():
+    from dataclasses import replace
+
+    ha = MagicMock()
+    mqtt = MagicMock()
+    options = replace(_options(), mode_select_entity_template="input_boolean.regulacion_por_lux_pista_{n}")
+    signals = CourtSignalPublisher(ha, _registry(), "club_1", path=f"{tempfile.mkdtemp()}/signals.json")
+    handler = CommandHandler(ha, mqtt, _registry(), options, signals)
+
+    handler.handle_court_command(0, {"command_id": "m1", "mode": "LUX_LOOP"})
+    ha.call_service.assert_any_call("input_boolean", "turn_on", "input_boolean.regulacion_por_lux_pista_1")
+
+    handler.handle_court_command(0, {"command_id": "m2", "mode": "AUTO"})
+    ha.call_service.assert_any_call("input_boolean", "turn_off", "input_boolean.regulacion_por_lux_pista_1")
+
+
+def test_default_helper_names_match_the_club_lux_blueprint():
+    from srlobo_mqtt_bridge.config import AddonOptions
+
+    defaults = AddonOptions(srlobo_token="t", srlobo_api_url="u", bootstrap_path="/b", log_level="info")
+    assert defaults.mode_select_entity_template == "input_boolean.regulacion_por_lux_pista_{n}"
+    assert defaults.lux_reference_entity_template == "input_number.referencia_de_lux_pista_{n}"
+    assert defaults.calibration_trigger_entity_template == "input_button.fijar_referencia_pista_{n}"

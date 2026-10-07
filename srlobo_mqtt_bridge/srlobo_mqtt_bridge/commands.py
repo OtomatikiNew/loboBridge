@@ -157,24 +157,34 @@ class CommandHandler:
             self._seed_lux_target(index, lux_target)
 
     def _set_mode(self, index: int, mode: str) -> None:
-        """Sets a court's mode-select helper entity to the given mode.
+        """Applies a court mode to its helper entity.
+
+        The helper can be:
+        - an input_boolean/switch (default: the club's lux regulation
+          switch, `input_boolean.regulacion_por_lux_pista_{n}`): turned on
+          for LUX_LOOP and off for any other mode. AUTO/MANUAL are cloud
+          modes; their on/off/brightness reach HA through the court signal.
+        - an input_select: the mode is selected as an option, as before.
 
         Args:
             index: 0-based court index.
-            mode: Mode option to select.
+            mode: AUTO, MANUAL or LUX_LOOP.
         """
         entity_id = self._options.mode_select_entity_template.format(n=court_number(index))
+        domain = entity_id.split(".", 1)[0]
         try:
-            self._ha.call_service("input_select", "select_option", entity_id, {"option": mode})
+            if domain == "input_select":
+                self._ha.call_service("input_select", "select_option", entity_id, {"option": mode})
+            elif domain in ("input_boolean", "switch"):
+                service = "turn_on" if mode == "LUX_LOOP" else "turn_off"
+                self._ha.call_service(domain, service, entity_id)
+            else:
+                logger.warning("Unsupported mode helper %s for court %s", entity_id, index)
+                return
+            logger.info("Court %s: mode %s applied on %s", index, mode, entity_id)
         except HomeAssistantError:
-            # Entity name is unconfirmed (see module docstring). Logged, not
-            # fatal, since on/off from the same command already went through.
-            logger.warning(
-                "Could not set mode %s on %s (court %s), entity name unconfirmed against the real HA blueprint",
-                mode,
-                entity_id,
-                index,
-            )
+            # Logged, not fatal: on/off from the same command already went through.
+            logger.warning("Could not set mode %s on %s (court %s)", mode, entity_id, index)
 
     def _seed_lux_target(self, index: int, lux_target: Any) -> None:
         """Seeds a court's lux-reference helper entity with a one-time
@@ -197,17 +207,27 @@ class CommandHandler:
             )
 
     def _calibrate_court(self, index: int, payload: Dict[str, Any]) -> None:
-        """Triggers a court's calibration input_button, optionally with a
-        power percentage.
+        """Presses the court's "set reference" button
+        (`input_button.fijar_referencia_pista_{n}`): the club's lux
+        automation captures the current filtered lux as the court's
+        reference and turns lux regulation on.
+
+        input_button.press takes no data, and the bridge never drives the
+        lights (ADR-026), so a calibration_power_pct in the payload is not
+        applied; the light should be at the wanted level when calibrating.
 
         Args:
             index: 0-based court index.
-            payload: Decoded court command payload; may carry calibration_power_pct.
+            payload: Decoded court command payload.
         """
-        calibration_power_pct = payload.get("calibration_power_pct")
         entity_id = self._options.calibration_trigger_entity_template.format(n=court_number(index))
-        data = {"power_pct": calibration_power_pct} if calibration_power_pct is not None else {}
-        self._ha.call_service("input_button", "press", entity_id, data)
+        if payload.get("calibration_power_pct") is not None:
+            logger.info(
+                "Court %s: calibration_power_pct=%s ignored, the reference is taken at the current light level",
+                index,
+                payload.get("calibration_power_pct"),
+            )
+        self._ha.call_service("input_button", "press", entity_id)
         logger.info("Court %s: triggered calibration via %s", index, entity_id)
 
     def _publish_ack(self, index: int, command_id: Optional[str], status: str, error: Optional[str]) -> None:

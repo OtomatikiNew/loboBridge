@@ -464,8 +464,12 @@ class TelemetryPublisher:
         }
 
     def _device_reported_mode(self, court_index: Optional[int]) -> Optional[str]:
-        """Mode from the court's mode select helper. Values that aren't
-        AUTO/MANUAL/LUX_LOOP are reported as None.
+        """Mode from the court's mode helper.
+
+        - input_boolean/switch (the club's lux regulation switch): "on" is
+          reported as LUX_LOOP; "off" as None, since AUTO and MANUAL are
+          cloud modes the switch can't tell apart.
+        - input_select: its value, if it's AUTO/MANUAL/LUX_LOOP.
 
         Args:
             court_index: 0-based court index.
@@ -475,12 +479,14 @@ class TelemetryPublisher:
         """
         if court_index is None:
             return None
-        cached = self._cache.get(self._options.mode_select_entity_template.format(n=court_number(court_index)))
+        entity_id = self._options.mode_select_entity_template.format(n=court_number(court_index))
+        cached = self._cache.get(entity_id)
         if cached is None:
             return None
         state = cached.get("state")
+        if entity_id.split(".", 1)[0] in ("input_boolean", "switch"):
+            return "LUX_LOOP" if state == "on" else None
         return state if state in _VALID_MODES else None
-
     def _build_door_state_payload(self, index: int, telemetry: Dict[str, Any]) -> Dict[str, Any]:
         """Builds doors/{n}/state from the telemetry payload plus the last
         executed action.
