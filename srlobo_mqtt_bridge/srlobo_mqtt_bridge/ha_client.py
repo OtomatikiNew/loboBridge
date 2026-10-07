@@ -203,7 +203,7 @@ class HomeAssistantClient:
         """
         self.ws_command(
             {
-                "type": "config/core/config/update",
+                "type": "config/core/update",
                 "latitude": latitude,
                 "longitude": longitude,
                 "time_zone": time_zone,
