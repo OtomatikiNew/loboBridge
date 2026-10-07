@@ -189,7 +189,8 @@ class HomeAssistantClient:
 
     def set_core_config(self, latitude: float, longitude: float, time_zone: str, language: str) -> None:
         """Sets HA's own core location/timezone/language config, removing
-        one manual step per install.
+        one manual step per install. No REST equivalent exists for this,
+        hence `ws_command` instead of a plain POST.
 
         Args:
             latitude: Venue latitude.
@@ -200,11 +201,15 @@ class HomeAssistantClient:
         Raises:
             HomeAssistantError: If the write does not succeed.
         """
-        url = f"{CORE_API}/config/core/config"
-        body = {"latitude": latitude, "longitude": longitude, "time_zone": time_zone, "language": language}
-        response = requests.post(url, headers=self._headers, json=body, timeout=HTTP_TIMEOUT_S)
-        if response.status_code not in (200, 201):
-            raise HomeAssistantError(f"Failed to set HA core config: {response.status_code} {response.text}")
+        self.ws_command(
+            {
+                "type": "config/core/config/update",
+                "latitude": latitude,
+                "longitude": longitude,
+                "time_zone": time_zone,
+                "language": language,
+            }
+        )
 
     def ws_command(self, message: Dict[str, Any]) -> Any:
         """Runs one WebSocket command on a new connection, for APIs with no
