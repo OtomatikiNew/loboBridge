@@ -22,8 +22,8 @@ def _registry() -> EntityRegistry:
         installation_id="club_1",
         source_system=None,
         mqtt=MqttConfig(broker="b", base_topic="srlobo/club_1"),
-        courts=[CourtEntity(index=1)],
-        doors=[DoorEntity(index=1, entity_id="lock.puerta_1")],
+        courts=[CourtEntity(index=0)],
+        doors=[DoorEntity(index=0, entity_id="lock.puerta_1")],
     )
     return EntityRegistry(bootstrap)
 
@@ -38,7 +38,7 @@ def _handler(ha=None):
 def test_court_on_with_brightness_calls_light_turn_on_and_acks_executed():
     handler, ha, mqtt = _handler()
 
-    handler.handle_court_command(1, {"command_id": "cmd-1", "state": "on", "brightness_pct": 70})
+    handler.handle_court_command(0, {"command_id": "cmd-1", "state": "on", "brightness_pct": 70})
 
     ha.call_service.assert_any_call("light", "turn_on", "light.luces_padel_1", {"brightness_pct": 70})
     ack_payload = mqtt.publish_court_ack.call_args[0][1]
@@ -49,7 +49,7 @@ def test_court_on_with_brightness_calls_light_turn_on_and_acks_executed():
 
 def test_court_off_calls_light_turn_off():
     handler, ha, mqtt = _handler()
-    handler.handle_court_command(1, {"command_id": "cmd-2", "state": "off"})
+    handler.handle_court_command(0, {"command_id": "cmd-2", "state": "off"})
     ha.call_service.assert_any_call("light", "turn_off", "light.luces_padel_1")
 
 
@@ -66,7 +66,7 @@ def test_court_mode_failure_does_not_fail_the_whole_command():
     ha.call_service.side_effect = call_service
     handler, ha, mqtt = _handler(ha)
 
-    handler.handle_court_command(1, {"command_id": "cmd-3", "state": "on", "mode": "MANUAL"})
+    handler.handle_court_command(0, {"command_id": "cmd-3", "state": "on", "mode": "MANUAL"})
 
     ack_payload = mqtt.publish_court_ack.call_args[0][1]
     assert ack_payload["status"] == "executed"
@@ -75,7 +75,7 @@ def test_court_mode_failure_does_not_fail_the_whole_command():
 def test_lux_loop_activation_seeds_lux_target():
     handler, ha, mqtt = _handler()
     handler.handle_court_command(
-        1, {"command_id": "cmd-lux-1", "mode": "LUX_LOOP", "lux_target": 320}
+        0, {"command_id": "cmd-lux-1", "mode": "LUX_LOOP", "lux_target": 320}
     )
     ha.call_service.assert_any_call(
         "input_number", "set_value", "input_number.referencia_lux_pista_1", {"value": 320}
@@ -84,7 +84,7 @@ def test_lux_loop_activation_seeds_lux_target():
 
 def test_mode_only_command_without_lux_target_does_not_touch_lux_reference():
     handler, ha, mqtt = _handler()
-    handler.handle_court_command(1, {"command_id": "cmd-lux-2", "mode": "AUTO"})
+    handler.handle_court_command(0, {"command_id": "cmd-lux-2", "mode": "AUTO"})
     for call in ha.call_service.call_args_list:
         assert call.args[0] != "input_number"
 
@@ -100,7 +100,7 @@ def test_lux_target_seed_failure_does_not_fail_the_whole_command():
     handler, ha, mqtt = _handler(ha)
 
     handler.handle_court_command(
-        1, {"command_id": "cmd-lux-3", "mode": "LUX_LOOP", "lux_target": 320}
+        0, {"command_id": "cmd-lux-3", "mode": "LUX_LOOP", "lux_target": 320}
     )
 
     ack_payload = mqtt.publish_court_ack.call_args[0][1]
@@ -110,7 +110,7 @@ def test_lux_target_seed_failure_does_not_fail_the_whole_command():
 def test_calibrate_action_calls_input_button_press():
     handler, ha, mqtt = _handler()
     handler.handle_court_command(
-        1, {"command_id": "cmd-4", "action": "calibrate", "calibration_power_pct": 65}
+        0, {"command_id": "cmd-4", "action": "calibrate", "calibration_power_pct": 65}
     )
     ha.call_service.assert_called_with("input_button", "press", "input_button.calibrar_pista_1", {"power_pct": 65})
 
@@ -127,7 +127,7 @@ def test_court_command_ha_error_acks_failed():
     ha.call_service.side_effect = HomeAssistantError("shelly not responding")
     handler, ha, mqtt = _handler(ha)
 
-    handler.handle_court_command(1, {"command_id": "cmd-6", "state": "on"})
+    handler.handle_court_command(0, {"command_id": "cmd-6", "state": "on"})
 
     ack_payload = mqtt.publish_court_ack.call_args[0][1]
     assert ack_payload["status"] == "failed"
@@ -136,20 +136,20 @@ def test_court_command_ha_error_acks_failed():
 
 def test_door_unlock_calls_lock_unlock():
     handler, ha, mqtt = _handler()
-    handler.handle_door_command(1, {"command_id": "cmd-7", "action": "unlock"})
+    handler.handle_door_command(0, {"command_id": "cmd-7", "action": "unlock"})
     ha.call_service.assert_called_with("lock", "unlock", "lock.puerta_1")
 
 
 def test_door_command_never_publishes_an_ack():
     """ADR-002 §5.2 only defines an ack topic for courts."""
     handler, ha, mqtt = _handler()
-    handler.handle_door_command(1, {"command_id": "cmd-8", "action": "open"})
+    handler.handle_door_command(0, {"command_id": "cmd-8", "action": "open"})
     mqtt.publish_court_ack.assert_not_called()
 
 
 def test_door_command_unknown_action_is_ignored():
     handler, ha, mqtt = _handler()
-    handler.handle_door_command(1, {"command_id": "cmd-9", "action": "explode"})
+    handler.handle_door_command(0, {"command_id": "cmd-9", "action": "explode"})
     ha.call_service.assert_not_called()
 
 
@@ -157,3 +157,25 @@ def test_door_command_for_unconfigured_door_does_not_crash():
     handler, ha, mqtt = _handler()
     handler.handle_door_command(99, {"command_id": "cmd-10", "action": "open"})
     ha.call_service.assert_not_called()
+
+
+def test_last_door_action_records_executed_action():
+    handler, ha, mqtt = _handler()
+    assert handler.last_door_action(0) is None  # nothing executed yet
+    handler.handle_door_command(0, {"command_id": "cmd-11", "action": "unlock"})
+    assert handler.last_door_action(0) == "unlock"
+    handler.handle_door_command(0, {"command_id": "cmd-12", "action": "close"})
+    assert handler.last_door_action(0) == "close"  # most recent wins
+
+
+def test_last_door_action_not_recorded_on_ha_failure():
+    handler, ha, mqtt = _handler()
+    ha.call_service.side_effect = HomeAssistantError("lock unreachable")
+    handler.handle_door_command(0, {"command_id": "cmd-13", "action": "open"})
+    assert handler.last_door_action(0) is None
+
+
+def test_last_door_action_not_recorded_for_unknown_action():
+    handler, ha, mqtt = _handler()
+    handler.handle_door_command(0, {"command_id": "cmd-14", "action": "explode"})
+    assert handler.last_door_action(0) is None

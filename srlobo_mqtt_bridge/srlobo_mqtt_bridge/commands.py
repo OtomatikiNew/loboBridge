@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from .config import AddonOptions
-from .entity_registry import court_helper_entity_id, EntityRegistry
+from .entity_registry import court_helper_entity_id, court_number, EntityRegistry
 from .ha_client import HomeAssistantClient, HomeAssistantError
 from .mqtt_client import BridgeMqttClient
 
@@ -57,13 +57,16 @@ class CommandHandler:
         self._mqtt = mqtt
         self._registry = registry
         self._options = options
+        # Last executed action per door, for doors/{n}/state last_action.
+        # The lock itself doesn't report this.
+        self._last_door_actions: Dict[int, str] = {}
 
     def handle_court_command(self, index: int, payload: Dict[str, Any]) -> None:
         """Handles an incoming court command, executing it against HA and
         publishing an ack for it.
 
         Args:
-            index: 1-based court index the command targets.
+            index: 0-based court index the command targets.
             payload: Decoded command payload from the courts/{index}/command topic.
         """
         if index not in self._registry.court_indexes():
@@ -89,7 +92,7 @@ class CommandHandler:
         service. Doors have no ack topic, unlike courts.
 
         Args:
-            index: 1-based door index the command targets.
+            index: 0-based door index the command targets.
             payload: Decoded command payload from the doors/{index}/command topic.
         """
         if index not in self._registry.door_indexes():
@@ -109,15 +112,27 @@ class CommandHandler:
         try:
             self._ha.call_service(domain, ha_service, entity_id)
             logger.info("Door %s: executed %s (%s.%s on %s)", index, action, domain, ha_service, entity_id)
+            self._last_door_actions[index] = action
         except HomeAssistantError:
             logger.exception("Door %s command %s failed", index, action)
+
+    def last_door_action(self, index: int) -> Optional[str]:
+        """Returns the last action executed for a door since startup.
+
+        Args:
+            index: 0-based door index.
+
+        Returns:
+            "open"/"close"/"unlock", or None.
+        """
+        return self._last_door_actions.get(index)
 
     def _control_court(self, index: int, payload: Dict[str, Any]) -> None:
         """Applies the on/off/brightness and mode/lux-target parts of a
         court command, if present in the payload.
 
         Args:
-            index: 1-based court index being controlled.
+            index: 0-based court index being controlled.
             payload: Decoded court command payload.
         """
         entity_id = court_helper_entity_id(index)
@@ -146,10 +161,10 @@ class CommandHandler:
         """Sets a court's mode-select helper entity to the given mode.
 
         Args:
-            index: 1-based court index.
+            index: 0-based court index.
             mode: Mode option to select.
         """
-        entity_id = self._options.mode_select_entity_template.format(n=index)
+        entity_id = self._options.mode_select_entity_template.format(n=court_number(index))
         try:
             self._ha.call_service("input_select", "select_option", entity_id, {"option": mode})
         except HomeAssistantError:
@@ -167,10 +182,10 @@ class CommandHandler:
         target value carried by a LUX_LOOP activation command.
 
         Args:
-            index: 1-based court index.
+            index: 0-based court index.
             lux_target: Target lux value to seed.
         """
-        entity_id = self._options.lux_reference_entity_template.format(n=index)
+        entity_id = self._options.lux_reference_entity_template.format(n=court_number(index))
         try:
             self._ha.call_service("input_number", "set_value", entity_id, {"value": lux_target})
             logger.info("Court %s: seeded lux_target=%s on %s", index, lux_target, entity_id)
@@ -187,11 +202,11 @@ class CommandHandler:
         power percentage.
 
         Args:
-            index: 1-based court index.
+            index: 0-based court index.
             payload: Decoded court command payload; may carry calibration_power_pct.
         """
         calibration_power_pct = payload.get("calibration_power_pct")
-        entity_id = self._options.calibration_trigger_entity_template.format(n=index)
+        entity_id = self._options.calibration_trigger_entity_template.format(n=court_number(index))
         data = {"power_pct": calibration_power_pct} if calibration_power_pct is not None else {}
         self._ha.call_service("input_button", "press", entity_id, data)
         logger.info("Court %s: triggered calibration via %s", index, entity_id)
@@ -200,7 +215,7 @@ class CommandHandler:
         """Publishes a court command ack.
 
         Args:
-            index: 1-based court index the command targeted.
+            index: 0-based court index the command targeted.
             command_id: Id of the command being acknowledged, as sent by the caller.
             status: Outcome of the command, e.g. "executed" or "failed".
             error: Error message if the command failed, otherwise None.

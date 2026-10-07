@@ -8,7 +8,7 @@ immediately on subscribe, same effect as bootstrap for a fresh install.
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from .ha_client import HomeAssistantClient, HomeAssistantError
 
@@ -34,13 +34,19 @@ class VenueConfig:
 class VenueConfigHandler:
     """Validates and applies venue/config MQTT messages."""
 
-    def __init__(self, ha: HomeAssistantClient) -> None:
+    def __init__(
+        self,
+        ha: HomeAssistantClient,
+        on_applied: Optional[Callable[["VenueConfig"], None]] = None,
+    ) -> None:
         """Stores the HA client used to apply venue config to HA core.
 
         Args:
             ha: Client used to write venue latitude/longitude/timezone/language to HA core config.
+            on_applied: Called with each applied config (used by the dashboard).
         """
         self._ha = ha
+        self._on_applied = on_applied
         self._current: Optional[VenueConfig] = None
 
     @property
@@ -79,6 +85,12 @@ class VenueConfigHandler:
             )
         except HomeAssistantError:
             logger.exception("Failed to apply venue config to HA core config")
+
+        if self._on_applied:
+            try:
+                self._on_applied(parsed)
+            except Exception:
+                logger.exception("venue/config on_applied callback failed")
 
     def _validate(self, payload: Dict[str, Any]) -> Optional[VenueConfig]:
         """Validates a venue/config payload's schema version and required

@@ -48,6 +48,25 @@ def _supervisor_token() -> str:
     return token
 
 
+def _ws_authenticate(ws: "websocket.WebSocket", token: str) -> None:
+    """Completes the HA WebSocket auth handshake.
+
+    Args:
+        ws: Open WebSocket connection to authenticate on.
+        token: Supervisor token to authenticate with.
+
+    Raises:
+        HomeAssistantError: If the handshake sequence or auth itself fails.
+    """
+    first = json.loads(ws.recv())
+    if first.get("type") != "auth_required":
+        raise HomeAssistantError(f"Unexpected first WebSocket message: {first}")
+    ws.send(json.dumps({"type": "auth", "access_token": token}))
+    auth_result = json.loads(ws.recv())
+    if auth_result.get("type") != "auth_ok":
+        raise HomeAssistantError("HA WebSocket authentication failed")
+
+
 class HomeAssistantClient:
     """Synchronous REST access to HA Core and the Supervisor, plus service calls."""
 
@@ -187,6 +206,70 @@ class HomeAssistantClient:
         if response.status_code not in (200, 201):
             raise HomeAssistantError(f"Failed to set HA core config: {response.status_code} {response.text}")
 
+    def ws_command(self, message: Dict[str, Any]) -> Any:
+        """Runs one WebSocket command on a new connection, for APIs with no
+        REST equivalent (lovelace/*, registries). Kept off the listener's
+        connection so a slow command doesn't hold up events.
+
+        Args:
+            message: Command without "id", e.g. {"type": "lovelace/dashboards/list"}.
+
+        Returns:
+            The command's result.
+
+        Raises:
+            HomeAssistantError: On auth failure or success=false.
+        """
+        ws = websocket.create_connection(CORE_WS_URL, timeout=WS_CONNECT_TIMEOUT_S)
+        try:
+            _ws_authenticate(ws, self._token)
+            ws.send(json.dumps({"id": 1, **message}))
+            while True:
+                reply = json.loads(ws.recv())
+                if reply.get("id") == 1 and reply.get("type") == "result":
+                    break
+        except websocket.WebSocketException as exc:
+            raise HomeAssistantError(f"WebSocket command {message.get('type')} failed: {exc}") from exc
+        finally:
+            ws.close()
+        if not reply.get("success"):
+            raise HomeAssistantError(f"WebSocket command {message.get('type')} failed: {reply.get('error')}")
+        return reply.get("result")
+
+    def list_device_registry(self) -> List[Dict[str, Any]]:
+        """Returns:
+            HA's device registry entries.
+        """
+        return self.ws_command({"type": "config/device_registry/list"}) or []
+
+    def list_entity_registry(self) -> List[Dict[str, Any]]:
+        """Returns:
+            HA's entity registry entries, disabled ones included.
+        """
+        return self.ws_command({"type": "config/entity_registry/list"}) or []
+
+    def enable_entity(self, entity_id: str) -> None:
+        """Enables a disabled entity.
+
+        Args:
+            entity_id: Entity to enable.
+        """
+        self.ws_command({"type": "config/entity_registry/update", "entity_id": entity_id, "disabled_by": None})
+
+    def reload_config_entry(self, entry_id: str) -> None:
+        """Reloads a config entry so newly enabled entities start reporting.
+
+        Args:
+            entry_id: Config entry to reload.
+
+        Raises:
+            HomeAssistantError: If the reload fails.
+        """
+        url = f"{CORE_API}/config/config_entries/entry/{entry_id}/reload"
+        response = requests.post(url, headers=self._headers, timeout=HTTP_TIMEOUT_S)
+        if response.status_code not in (200, 201):
+            raise HomeAssistantError(f"Reloading config entry failed: {response.status_code} {response.text}")
+
 
 OnEventCallback = Callable[[Dict[str, Any]], None]
 
@@ -200,16 +283,24 @@ class HAStateListener:
     state_changed event to on_event.
     """
 
-    def __init__(self, on_event: OnEventCallback, on_reconnect: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_event: OnEventCallback,
+        on_reconnect: Callable[[], None],
+        on_device_registry_updated: Optional[OnEventCallback] = None,
+    ) -> None:
         """Stores the callbacks to invoke on connect and on each event.
 
         Args:
             on_event: Called with the event data of every state_changed event.
             on_reconnect: Called right after each successful (re)connect, before any events are dispatched.
+            on_device_registry_updated: Called with the data of every
+                device_registry_updated event (ADR-007, new devices).
         """
         self._token = _supervisor_token()
         self._on_event = on_event
         self._on_reconnect = on_reconnect
+        self._on_device_registry_updated = on_device_registry_updated
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -251,8 +342,11 @@ class HAStateListener:
                 message = json.loads(raw)
                 if message.get("type") == "event":
                     event = message.get("event", {})
-                    if event.get("event_type") == "state_changed":
+                    event_type = event.get("event_type")
+                    if event_type == "state_changed":
                         self._on_event(event.get("data", {}))
+                    elif event_type == "device_registry_updated" and self._on_device_registry_updated:
+                        self._on_device_registry_updated(event.get("data", {}))
         finally:
             ws.close()
 
@@ -265,24 +359,30 @@ class HAStateListener:
         Raises:
             HomeAssistantError: If the handshake sequence or auth itself fails.
         """
-        first = json.loads(ws.recv())
-        if first.get("type") != "auth_required":
-            raise HomeAssistantError(f"Unexpected first WebSocket message: {first}")
-        ws.send(json.dumps({"type": "auth", "access_token": self._token}))
-        auth_result = json.loads(ws.recv())
-        if auth_result.get("type") != "auth_ok":
-            raise HomeAssistantError("HA WebSocket authentication failed")
+        _ws_authenticate(ws, self._token)
 
     def _subscribe(self, ws: "websocket.WebSocket") -> None:
-        """Subscribes the WebSocket connection to state_changed events.
+        """Subscribes to state_changed and, if a handler is set,
+        device_registry_updated. Events that arrive before both are
+        confirmed are dropped; discovery runs right after anyway.
 
         Args:
             ws: Open, authenticated WebSocket connection.
 
         Raises:
-            HomeAssistantError: If the subscribe request is not acknowledged as successful.
+            HomeAssistantError: If a subscribe request is not acknowledged as successful.
         """
-        ws.send(json.dumps({"id": 1, "type": "subscribe_events", "event_type": "state_changed"}))
-        result = json.loads(ws.recv())
-        if not result.get("success"):
-            raise HomeAssistantError(f"Failed to subscribe to state_changed: {result}")
+        subscriptions = {1: "state_changed"}
+        if self._on_device_registry_updated:
+            subscriptions[2] = "device_registry_updated"
+        for sub_id, event_type in subscriptions.items():
+            ws.send(json.dumps({"id": sub_id, "type": "subscribe_events", "event_type": event_type}))
+
+        pending = set(subscriptions)
+        while pending:
+            message = json.loads(ws.recv())
+            if message.get("type") != "result" or message.get("id") not in pending:
+                continue
+            if not message.get("success"):
+                raise HomeAssistantError(f"Failed to subscribe to {subscriptions[message['id']]}: {message}")
+            pending.discard(message["id"])
