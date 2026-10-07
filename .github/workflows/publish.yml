@@ -187,6 +187,17 @@ jobs:
           cp src/.github/public/repository.yaml public/repository.yaml
           cp src/.github/public/README.md public/README.md
 
+      - name: Report published packages
+        env:
+          GH_TOKEN: ${{ secrets.LUPOS_PUBLISH_TOKEN }}
+        run: |
+          for arch in aarch64 amd64; do
+            name="${arch}-${IMAGE_NAME}"
+            vis="$(gh api "orgs/LuPOS-hub/packages/container/${name}" --jq '.visibility' 2>&1 || true)"
+            tags="$(gh api "orgs/LuPOS-hub/packages/container/${name}/versions" --jq '[.[].metadata.container.tags[]] | join(",")' 2>&1 || true)"
+            echo "::notice title=package ${name}::visibility=${vis} tags=${tags}"
+          done
+
       - name: Commit and push
         working-directory: public
         run: |
