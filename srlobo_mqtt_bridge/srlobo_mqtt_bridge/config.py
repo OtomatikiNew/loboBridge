@@ -72,6 +72,8 @@ class AddonOptions:
     mode_select_entity_template: str = "input_select.modo_pista_{n}"
     lux_reference_entity_template: str = "input_number.referencia_lux_pista_{n}"
     calibration_trigger_entity_template: str = "input_button.calibrar_pista_{n}"
+    court_signal_entity_template: str = "binary_sensor.pista_{n}"
+    local_auto_manual_entity_template: str = "input_boolean.auto_manual_luz_{n}"
     # Devices from these manufacturers get their disabled entities
     # re-enabled (device_registry.py). Substring match, case-insensitive.
     reenable_manufacturers: List[str] = field(default_factory=lambda: list(DEFAULT_REENABLE_MANUFACTURERS))
@@ -107,6 +109,10 @@ def load_options() -> AddonOptions:
         ),
         calibration_trigger_entity_template=raw.get(
             "calibration_trigger_entity_template", "input_button.calibrar_pista_{n}"
+        ),
+        court_signal_entity_template=raw.get("court_signal_entity_template", "binary_sensor.pista_{n}"),
+        local_auto_manual_entity_template=raw.get(
+            "local_auto_manual_entity_template", "input_boolean.auto_manual_luz_{n}"
         ),
         reenable_manufacturers=list(raw.get("reenable_manufacturers", DEFAULT_REENABLE_MANUFACTURERS)),
     )

@@ -219,9 +219,35 @@ class TelemetryPublisher:
 
         target = self._discovery.reverse.get(entity_id)
         if target is None:
-            return  # Not one of ours, ignore it (entity_registry principle).
+            index = self._local_court_index(entity_id)
+            if index is None:
+                return  # Not one of ours, ignore it (entity_registry principle).
+            target = ("court", index)
         domain, index = target
         self._debounced_publish(domain, index)
+
+    def _local_court_index(self, entity_id: str) -> Optional[int]:
+        """Court index for the local helpers that change what a court does
+        without touching its lights: the auto/manual switch and the mode
+        select. A change there republishes the court's state.
+
+        Args:
+            entity_id: HA entity id from a state_changed event.
+
+        Returns:
+            0-based court index, or None if it isn't one of them.
+        """
+        if self._discovery is None:
+            return None
+        for index in self._discovery.courts:
+            number = court_number(index)
+            if entity_id in (
+                self._options.local_auto_manual_entity_template.format(n=number),
+                self._options.mode_select_entity_template.format(n=number),
+                self._options.court_signal_entity_template.format(n=number),
+            ):
+                return index
+        return None
 
     def _debounced_publish(self, domain: str, index: int) -> None:
         """Schedules a publish for a court/door after DEBOUNCE_S, resetting
@@ -381,11 +407,60 @@ class TelemetryPublisher:
             "wifi_rssi": worst_rssi,
             "wifi_ap": _find_wifi_ap(all_entities),
             "mode": self._device_reported_mode(telemetry.get("court_index")),
+            # ADR-026: whether the club has the court in local manual, and the
+            # signal the bridge last gave the local automation. Additive,
+            # optional fields (ADR-025 Decision 7).
+            "local_mode": self._local_mode(telemetry.get("court_index")),
+            "signal": self._signal(telemetry.get("court_index")),
             "shelly_online": not saw_unavailable,
             "firmware_version": _firmware_version(
                 self._firmware, [device.get("member_entity_id") for device in telemetry.get("devices", [])]
             ),
             "updated_at": _utc_now_iso(),
+        }
+
+    def _local_mode(self, court_index: Optional[int]) -> Optional[str]:
+        """Local auto/manual switch, as used by the club's light automation:
+        on = auto (follows the signal), off = manual override.
+
+        Args:
+            court_index: 0-based court index.
+
+        Returns:
+            "auto", "manual", or None if the switch doesn't exist or is unavailable.
+        """
+        if court_index is None:
+            return None
+        cached = self._cache.get(
+            self._options.local_auto_manual_entity_template.format(n=court_number(court_index))
+        )
+        if cached is None:
+            return None
+        state = cached.get("state")
+        if state == "on":
+            return "auto"
+        if state == "off":
+            return "manual"
+        return None
+
+    def _signal(self, court_index: Optional[int]) -> Optional[Dict[str, Any]]:
+        """The court signal as HA currently has it.
+
+        Args:
+            court_index: 0-based court index.
+
+        Returns:
+            {"state", "brightness"}, or None if HA doesn't have it.
+        """
+        if court_index is None:
+            return None
+        cached = self._cache.get(self._options.court_signal_entity_template.format(n=court_number(court_index)))
+        if cached is None or cached.get("state") not in ("on", "off"):
+            return None
+        brightness = (cached.get("attributes") or {}).get("brightness")
+        return {
+            "state": cached.get("state"),
+            "brightness": brightness if isinstance(brightness, (int, float)) else None,
         }
 
     def _device_reported_mode(self, court_index: Optional[int]) -> Optional[str]:

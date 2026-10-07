@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+from srlobo_mqtt_bridge.court_signal import CourtSignalPublisher
 from srlobo_mqtt_bridge.config import BootstrapConfig, CourtEntity, MqttConfig
 from srlobo_mqtt_bridge.entity_registry import EntityRegistry
 from srlobo_mqtt_bridge.ha_client import HomeAssistantError
@@ -62,14 +63,25 @@ class _Clock:
         return self.utc
 
 
+def _signal_writes(ha):
+    """(entity_id, state, brightness) for every court signal written."""
+    return [
+        (c.args[0], c.args[1], c.args[2]["brightness"])
+        for c in ha.set_state.call_args_list
+        if c.args[0].startswith("binary_sensor.pista_")
+    ]
+
+
 def _scheduler(tmp_path, ha=None, installation_id="club_1"):
     clock = _Clock()
     ha = ha or MagicMock()
     ha.get_core_info.return_value = {"time_zone": "Europe/Madrid"}
+    signals = CourtSignalPublisher(ha, _registry(), installation_id, path=str(tmp_path / "signals.json"))
     scheduler = OfflineScheduler(
         ha,
         _registry(),
         installation_id,
+        signals,
         path=str(tmp_path / "schedule.json"),
         monotonic=clock.monotonic,
         now=clock.now,
@@ -206,8 +218,10 @@ def test_stale_cloud_switches_to_schedule(tmp_path):
     clock.mono += STALE_AFTER_S + 1
 
     assert scheduler.evaluate() == MODE_OFFLINE_FALLBACK
-    ha.call_service.assert_any_call("light", "turn_on", "light.luces_padel_1", {"brightness_pct": 80.0})
-    ha.call_service.assert_any_call("light", "turn_off", "light.luces_padel_2")
+    writes = _signal_writes(ha)
+    assert ("binary_sensor.pista_1", "on", 80) in writes
+    assert ("binary_sensor.pista_2", "off", 0) in writes
+    ha.call_service.assert_not_called()  # never the lights (ADR-026)
 
 
 def test_fallback_is_edge_triggered(tmp_path):
@@ -215,27 +229,34 @@ def test_fallback_is_edge_triggered(tmp_path):
     scheduler.handle_schedule(_payload())
     clock.mono += STALE_AFTER_S + 1
     scheduler.evaluate()
-    ha.call_service.reset_mock()
+    ha.set_state.reset_mock()
 
     clock.mono += 15
     scheduler.evaluate()
-    ha.call_service.assert_not_called()
+    assert _signal_writes(ha) == []
 
     clock.utc = NOW + timedelta(minutes=31)  # court 0's interval has ended
     scheduler.evaluate()
-    ha.call_service.assert_called_once_with("light", "turn_off", "light.luces_padel_1")
+    assert _signal_writes(ha) == [("binary_sensor.pista_1", "off", 0)]
 
 
 def test_failed_write_is_retried_next_evaluation(tmp_path):
     ha = MagicMock()
-    ha.call_service.side_effect = [HomeAssistantError("down"), None, None, None]
+    failures = {"left": 1}
+
+    def set_state(entity_id, state, attributes):
+        if entity_id == "binary_sensor.pista_1" and failures["left"]:
+            failures["left"] -= 1
+            raise HomeAssistantError("down")
+
+    ha.set_state.side_effect = set_state
     scheduler, ha, clock = _scheduler(tmp_path, ha=ha)
     scheduler.handle_schedule(_payload())
     clock.mono += STALE_AFTER_S + 1
     scheduler.evaluate()
     scheduler.evaluate()
-    on_calls = [c for c in ha.call_service.call_args_list if c.args[1] == "turn_on"]
-    assert len(on_calls) == 2
+    on_writes = [w for w in _signal_writes(ha) if w[0] == "binary_sensor.pista_1"]
+    assert len(on_writes) == 2
 
 
 def test_cloud_signal_restores_authority(tmp_path):
@@ -245,9 +266,9 @@ def test_cloud_signal_restores_authority(tmp_path):
     assert scheduler.evaluate() == MODE_OFFLINE_FALLBACK
 
     scheduler.mark_cloud_alive()
-    ha.call_service.reset_mock()
+    ha.set_state.reset_mock()
     assert scheduler.evaluate() == MODE_CLOUD
-    ha.call_service.assert_not_called()
+    assert _signal_writes(ha) == []
 
 
 def test_expired_schedule_turns_scheduled_courts_off(tmp_path):
@@ -257,15 +278,16 @@ def test_expired_schedule_turns_scheduled_courts_off(tmp_path):
     clock.utc = NOW + timedelta(days=8)
 
     assert scheduler.evaluate() == MODE_SCHEDULE_EXPIRED
-    ha.call_service.assert_any_call("light", "turn_off", "light.luces_padel_1")
-    ha.call_service.assert_any_call("light", "turn_off", "light.luces_padel_2")
+    writes = _signal_writes(ha)
+    assert ("binary_sensor.pista_1", "off", 0) in writes
+    assert ("binary_sensor.pista_2", "off", 0) in writes
 
 
 def test_stale_without_any_schedule_touches_nothing(tmp_path):
     scheduler, ha, clock = _scheduler(tmp_path)
     clock.mono += STALE_AFTER_S + 1
     assert scheduler.evaluate() == MODE_SCHEDULE_EXPIRED
-    ha.call_service.assert_not_called()
+    assert _signal_writes(ha) == []
 
 
 def test_diagnostic_sensor_reports_mode_and_attributes(tmp_path):

@@ -1,7 +1,9 @@
 """Court/door command execution.
 
-On/off + brightness (courts) and open/close/unlock (doors) call real HA
-services (light.*, lock.*) directly. Mode-switching and calibration touch HA
+Court on/off + brightness never touch the real lights (ADR-026): they set the
+court's signal, `binary_sensor.pista_{n}`, and the club's local automation
+drives the lights from it. Doors (open/close/unlock) call lock.* directly.
+Mode-switching and calibration touch HA
 helper entities with no documented naming convention anywhere, so those go
 through the configurable entity-name templates in AddonOptions instead of a
 hardcoded guess.
@@ -12,7 +14,8 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from .config import AddonOptions
-from .entity_registry import court_helper_entity_id, court_number, EntityRegistry
+from .court_signal import SOURCE_CLOUD, CourtSignalPublisher
+from .entity_registry import court_number, EntityRegistry
 from .ha_client import HomeAssistantClient, HomeAssistantError
 from .mqtt_client import BridgeMqttClient
 
@@ -44,6 +47,7 @@ class CommandHandler:
         mqtt: BridgeMqttClient,
         registry: EntityRegistry,
         options: AddonOptions,
+        signals: CourtSignalPublisher,
     ) -> None:
         """Stores the collaborators needed to execute and acknowledge commands.
 
@@ -52,7 +56,9 @@ class CommandHandler:
             mqtt: Client used to publish command acks.
             registry: Registry used to validate court/door indexes and resolve door entity ids.
             options: Add-on options, including the configurable entity-name templates.
+            signals: Writes each court's signal (binary_sensor.pista_{n}).
         """
+        self._signals = signals
         self._ha = ha
         self._mqtt = mqtt
         self._registry = registry
@@ -135,15 +141,8 @@ class CommandHandler:
             index: 0-based court index being controlled.
             payload: Decoded court command payload.
         """
-        entity_id = court_helper_entity_id(index)
-        state = payload.get("state")
-        brightness_pct = payload.get("brightness_pct")
-
-        if state == "off":
-            self._ha.call_service("light", "turn_off", entity_id)
-        elif state == "on" or brightness_pct is not None:
-            data = {"brightness_pct": brightness_pct} if brightness_pct is not None else {}
-            self._ha.call_service("light", "turn_on", entity_id, data)
+        # ADR-026: only the signal, never light.luces_padel_{n}.
+        self._signals.apply(index, payload.get("state"), payload.get("brightness_pct"), SOURCE_CLOUD)
 
         mode = payload.get("mode")
         if mode is not None:

@@ -1,6 +1,6 @@
 name: "SrLobo MQTT Bridge"
 description: "Standard MQTT bridge between SrLobo Cloud and Home Assistant"
-version: "0.2.6"
+version: "0.2.7"
 slug: "srlobo_mqtt_bridge"
 init: false
 homeassistant_api: true
@@ -28,6 +28,8 @@ options:
   mode_select_entity_template: "input_select.modo_pista_{n}"
   lux_reference_entity_template: "input_number.referencia_lux_pista_{n}"
   calibration_trigger_entity_template: "input_button.calibrar_pista_{n}"
+  court_signal_entity_template: "binary_sensor.pista_{n}"
+  local_auto_manual_entity_template: "input_boolean.auto_manual_luz_{n}"
   reenable_manufacturers:
     - "Shelly"
     - "Nuki"
@@ -40,6 +42,8 @@ schema:
   mode_select_entity_template: str
   lux_reference_entity_template: str
   calibration_trigger_entity_template: str
+  court_signal_entity_template: str
+  local_auto_manual_entity_template: str
   reenable_manufacturers:
     - str
 

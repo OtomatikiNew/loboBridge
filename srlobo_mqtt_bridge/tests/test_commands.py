@@ -1,6 +1,8 @@
+import tempfile
 from unittest.mock import MagicMock
 
 from srlobo_mqtt_bridge.commands import CommandHandler
+from srlobo_mqtt_bridge.court_signal import CourtSignalPublisher
 from srlobo_mqtt_bridge.config import AddonOptions, BootstrapConfig, CourtEntity, DoorEntity, MqttConfig
 from srlobo_mqtt_bridge.entity_registry import EntityRegistry
 from srlobo_mqtt_bridge.ha_client import HomeAssistantError
@@ -31,26 +33,43 @@ def _registry() -> EntityRegistry:
 def _handler(ha=None):
     ha = ha or MagicMock()
     mqtt = MagicMock()
-    handler = CommandHandler(ha, mqtt, _registry(), _options())
+    signals = CourtSignalPublisher(ha, _registry(), "club_1", path=f"{tempfile.mkdtemp()}/signals.json")
+    handler = CommandHandler(ha, mqtt, _registry(), _options(), signals)
     return handler, ha, mqtt
 
 
-def test_court_on_with_brightness_calls_light_turn_on_and_acks_executed():
+def _light_calls(ha):
+    return [c for c in ha.call_service.call_args_list if c.args[0] == "light"]
+
+
+def test_court_on_with_brightness_sets_signal_never_the_light_and_acks_executed():
     handler, ha, mqtt = _handler()
 
     handler.handle_court_command(0, {"command_id": "cmd-1", "state": "on", "brightness_pct": 70})
 
-    ha.call_service.assert_any_call("light", "turn_on", "light.luces_padel_1", {"brightness_pct": 70})
+    entity_id, state, attributes = ha.set_state.call_args.args
+    assert entity_id == "binary_sensor.pista_1"
+    assert state == "on"
+    assert attributes["brightness"] == 70
+    assert _light_calls(ha) == []
     ack_payload = mqtt.publish_court_ack.call_args[0][1]
     assert ack_payload["command_id"] == "cmd-1"
     assert ack_payload["status"] == "executed"
     assert ack_payload["error"] is None
 
 
-def test_court_off_calls_light_turn_off():
+def test_court_off_sets_signal_off_with_zero_brightness():
     handler, ha, mqtt = _handler()
     handler.handle_court_command(0, {"command_id": "cmd-2", "state": "off"})
-    ha.call_service.assert_any_call("light", "turn_off", "light.luces_padel_1")
+    entity_id, state, attributes = ha.set_state.call_args.args
+    assert (entity_id, state, attributes["brightness"]) == ("binary_sensor.pista_1", "off", 0)
+    assert _light_calls(ha) == []
+
+
+def test_mode_only_command_does_not_touch_the_signal():
+    handler, ha, mqtt = _handler()
+    handler.handle_court_command(0, {"command_id": "cmd-2b", "mode": "AUTO"})
+    ha.set_state.assert_not_called()
 
 
 def test_court_mode_failure_does_not_fail_the_whole_command():
@@ -119,12 +138,13 @@ def test_court_command_for_unknown_index_is_ignored():
     handler, ha, mqtt = _handler()
     handler.handle_court_command(99, {"command_id": "cmd-5", "state": "on"})
     ha.call_service.assert_not_called()
+    ha.set_state.assert_not_called()
     mqtt.publish_court_ack.assert_not_called()
 
 
 def test_court_command_ha_error_acks_failed():
     ha = MagicMock()
-    ha.call_service.side_effect = HomeAssistantError("shelly not responding")
+    ha.set_state.side_effect = HomeAssistantError("shelly not responding")
     handler, ha, mqtt = _handler(ha)
 
     handler.handle_court_command(0, {"command_id": "cmd-6", "state": "on"})

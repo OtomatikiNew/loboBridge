@@ -8,6 +8,7 @@ import threading
 
 from .bootstrap import SrLoboBootstrapClient
 from .commands import CommandHandler
+from .court_signal import CourtSignalPublisher
 from .config import load_options
 from .dashboard import DashboardProvisioner
 from .device_registry import DisabledEntityEnabler
@@ -53,17 +54,29 @@ def main() -> None:
     ha = HomeAssistantClient()
     mqtt = BridgeMqttClient(bootstrap.mqtt, bootstrap.installation_id)
 
-    commands = CommandHandler(ha, mqtt, registry, options)
+    # ADR-026: the bridge never drives the court lights; it writes each
+    # court's signal and the club's local automation drives the lights.
+    signals = CourtSignalPublisher(
+        ha, registry, bootstrap.installation_id, entity_template=options.court_signal_entity_template
+    )
+    signals.load()
+
+    commands = CommandHandler(ha, mqtt, registry, options, signals)
     mqtt.on_court_command(commands.handle_court_command)
     mqtt.on_door_command(commands.handle_door_command)
 
-    scheduler = OfflineScheduler(ha, registry, bootstrap.installation_id)
+    scheduler = OfflineScheduler(ha, registry, bootstrap.installation_id, signals)
     scheduler.load()
     mqtt.on_schedule(scheduler.handle_schedule)
     mqtt.on_cloud_signal(scheduler.mark_cloud_alive)
 
     dashboard = DashboardProvisioner(ha, options)
-    venue_config = VenueConfigHandler(ha, on_applied=dashboard.update_venue)
+
+    def on_venue_applied(config) -> None:
+        dashboard.update_venue(config)
+        signals.set_court_names(config.court_names)
+
+    venue_config = VenueConfigHandler(ha, on_applied=on_venue_applied)
     mqtt.on_venue_config(venue_config.handle)
 
     telemetry = TelemetryPublisher(mqtt, ha, options, commands)
@@ -75,7 +88,7 @@ def main() -> None:
 
     listener = HAStateListener(
         on_event=telemetry.on_state_changed,
-        on_reconnect=rediscovery.on_reconnect,
+        on_reconnect=lambda: (signals.republish(), rediscovery.on_reconnect()),
         on_device_registry_updated=rediscovery.on_device_registry_updated,
     )
 
@@ -84,6 +97,7 @@ def main() -> None:
     listener.start()
     health.start()
     scheduler.start()
+    signals.start()
     publish_bridge_connectivity_discovery(bootstrap.installation_id)
 
     logger.info("automation_bridge running")

@@ -319,3 +319,48 @@ def test_unknown_firmware_is_null():
     publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
     state = publisher._build_court_state_payload({"helper": {}, "devices": [{"member_entity_id": "light.w1"}]})
     assert state["firmware_version"] is None
+
+
+# --- ADR-026: local manual mode and court signal ---
+
+
+def test_court_state_reports_local_manual_mode_and_signal():
+    publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
+    publisher._cache.seed(
+        [
+            {"entity_id": "input_boolean.auto_manual_luz_1", "state": "off"},
+            {"entity_id": "binary_sensor.pista_1", "state": "on", "attributes": {"brightness": 80}},
+            {"entity_id": "input_boolean.auto_manual_luz_2", "state": "on"},
+        ]
+    )
+    court_1 = publisher._build_court_state_payload({"court_index": 0, "helper": {"state": "on"}, "devices": []})
+    court_2 = publisher._build_court_state_payload({"court_index": 1, "helper": {"state": "off"}, "devices": []})
+
+    assert court_1["local_mode"] == "manual"
+    assert court_1["signal"] == {"state": "on", "brightness": 80}
+    assert court_2["local_mode"] == "auto"
+    assert court_2["signal"] is None  # no signal written yet
+
+
+def test_local_mode_is_none_when_switch_missing_or_unavailable():
+    publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
+    publisher._cache.seed([{"entity_id": "input_boolean.auto_manual_luz_2", "state": "unavailable"}])
+    assert publisher._build_court_state_payload({"court_index": 0, "helper": {}, "devices": []})["local_mode"] is None
+    assert publisher._build_court_state_payload({"court_index": 1, "helper": {}, "devices": []})["local_mode"] is None
+
+
+def test_auto_manual_switch_change_republishes_its_court():
+    from srlobo_mqtt_bridge.discovery import DiscoveryState
+
+    publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
+    discovery = DiscoveryState()
+    discovery.courts[0] = CourtDiscovery(index=0, helper_entity_id="light.luces_padel_1", devices=[])
+    publisher.on_rediscover(discovery)
+    publisher._debounced_publish = MagicMock()
+
+    publisher.on_state_changed({"entity_id": "input_boolean.auto_manual_luz_1", "new_state": {"state": "off"}})
+    publisher._debounced_publish.assert_called_once_with("court", 0)
+
+    publisher._debounced_publish.reset_mock()
+    publisher.on_state_changed({"entity_id": "input_boolean.auto_manual_luz_9", "new_state": {"state": "off"}})
+    publisher._debounced_publish.assert_not_called()

@@ -13,7 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from .entity_registry import EntityRegistry, court_helper_entity_id
+from .court_signal import SOURCE_OFFLINE_SCHEDULE, CourtSignalPublisher
+from .entity_registry import EntityRegistry
 from .ha_client import HomeAssistantClient, HomeAssistantError
 from .persistence import DATA_DIR, read_json, write_json_atomic
 
@@ -217,6 +218,7 @@ class OfflineScheduler:
         ha: HomeAssistantClient,
         registry: EntityRegistry,
         installation_id: str,
+        signals: CourtSignalPublisher,
         path: str = SCHEDULE_PATH,
         monotonic: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = _utc_now,
@@ -229,6 +231,8 @@ class OfflineScheduler:
             registry: This installation's courts.
             installation_id: Saved with the schedule file, so a schedule
                 restored from another club's backup is ignored.
+            signals: Court signals; the schedule drives the courts through
+                them, never the lights directly (ADR-026).
             path: Schedule file.
             monotonic: Monotonic clock (tests).
             now: UTC clock (tests).
@@ -236,6 +240,7 @@ class OfflineScheduler:
         self._ha = ha
         self._registry = registry
         self._installation_id = installation_id
+        self._signals = signals
         self._path = path
         self._monotonic = monotonic
         self._now = now
@@ -361,9 +366,9 @@ class OfflineScheduler:
         return mode
 
     def _apply(self, index: int, desired: CourtState) -> None:
-        """Sets a court's light group, but only when `desired` differs from
-        what we last set, so a manual change in HA isn't overwritten every
-        cycle.
+        """Sets a court's signal (binary_sensor.pista_{n}), but only when
+        `desired` differs from what we last set, so a local change isn't
+        overwritten every cycle. The local automation drives the lights.
 
         Args:
             index: 0-based court index.
@@ -371,18 +376,14 @@ class OfflineScheduler:
         """
         if self._applied.get(index) == desired:
             return
-        entity_id = court_helper_entity_id(index)
         state, brightness_pct = desired
         try:
-            if state == "on":
-                self._ha.call_service("light", "turn_on", entity_id, {"brightness_pct": brightness_pct})
-            else:
-                self._ha.call_service("light", "turn_off", entity_id)
+            self._signals.apply(index, state, brightness_pct, SOURCE_OFFLINE_SCHEDULE)
         except HomeAssistantError:
-            logger.exception("Could not set court %s to %s", index, desired)
+            logger.exception("Could not set court %s signal to %s", index, desired)
             return  # retried next evaluation
         self._applied[index] = desired
-        logger.info("Offline schedule: court %s (%s) -> %s", index, entity_id, desired)
+        logger.info("Offline schedule: court %s (%s) -> %s", index, self._signals.entity_id(index), desired)
 
     def _refresh_diagnostic(self, mode: str, schedule: Optional[Schedule], force: bool) -> None:
         """Writes sensor.lobobridge_mode on mode changes and every
