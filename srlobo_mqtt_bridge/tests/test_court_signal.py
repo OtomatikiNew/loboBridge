@@ -72,16 +72,19 @@ def test_mode_only_payload_is_not_applied(tmp_path):
 def test_identical_rewrite_keeps_same_attributes(tmp_path):
     """A rewrite with identical state and attributes doesn't fire
     state_changed in HA, so periodic refreshes don't retrigger automations."""
-    times = iter(["2026-10-07T12:00:00Z", "2026-10-07T12:05:00Z"])
+    ticks = iter(f"2026-10-07T12:{m:02d}:00Z" for m in range(60))
     ha = MagicMock()
+    ha.get_state.return_value = None
     publisher = CourtSignalPublisher(
-        ha, _registry(), "club_1", path=str(tmp_path / "s.json"), now_iso=lambda: next(times)
+        ha, _registry(), "club_1", path=str(tmp_path / "s.json"), now_iso=lambda: next(ticks)
     )
     publisher.apply(0, "on", 70, SOURCE_CLOUD)
-    first = ha.set_state.call_args.args
     publisher.apply(0, "on", 70, SOURCE_CLOUD)
     publisher.republish()
-    assert ha.set_state.call_args.args == first
+    publisher.republish()
+    court_1 = [c.args for c in ha.set_state.call_args_list if c.args[0] == "binary_sensor.pista_1"]
+    assert len(court_1) == 4
+    assert all(args == court_1[0] for args in court_1)
 
 
 def test_signal_survives_restart_and_is_rewritten_on_load(tmp_path):
@@ -108,10 +111,12 @@ def test_signals_from_another_installation_are_ignored(tmp_path):
     (tmp_path / "signals.json").write_text(
         json.dumps({"installation_id": "other_club", "courts": {"0": {"state": "on", "brightness": 90}}})
     )
-    publisher, ha = _publisher(tmp_path)
+    ha = MagicMock()
+    ha.get_state.return_value = None  # no light group
+    publisher, ha = _publisher(tmp_path, ha=ha)
     publisher.load()
-    ha.set_state.assert_not_called()
-    assert publisher.current(0) is None
+    # The other club's "on 90" is never used; the court starts from its own lights.
+    assert publisher.current(0) == ("off", 0)
 
 
 def test_invalid_saved_values_are_ignored(tmp_path):
@@ -123,27 +128,41 @@ def test_invalid_saved_values_are_ignored(tmp_path):
             }
         )
     )
-    publisher, ha = _publisher(tmp_path)
+    ha = MagicMock()
+    ha.get_state.return_value = None
+    publisher, ha = _publisher(tmp_path, ha=ha)
     publisher.load()
-    assert [c.args[0] for c in ha.set_state.call_args_list] == ["binary_sensor.pista_2"]
+    assert publisher.current(1) == ("on", 40)  # valid saved value kept
+    assert publisher.current(0) == ("off", 0)  # "dim" discarded, initialised instead
 
 
 def test_failed_write_is_kept_and_written_on_next_refresh(tmp_path):
     ha = MagicMock()
-    ha.set_state.side_effect = [HomeAssistantError("core restarting"), None]
+    ha.get_state.return_value = None
+    failures = {"left": 1}
+
+    def set_state(entity_id, state, attributes):
+        if failures["left"]:
+            failures["left"] -= 1
+            raise HomeAssistantError("core restarting")
+
+    ha.set_state.side_effect = set_state
     publisher, ha = _publisher(tmp_path, ha=ha)
     with pytest.raises(HomeAssistantError):
         publisher.apply(0, "on", 50, SOURCE_CLOUD)
     assert publisher.current(0) == ("on", 50)
     publisher.republish()
-    assert ha.set_state.call_args.args[1] == "on"
+    written = {c.args[0]: c.args[1] for c in ha.set_state.call_args_list}
+    assert written["binary_sensor.pista_1"] == "on"
 
 
 def test_court_names_from_venue_config_are_used(tmp_path):
     publisher, ha = _publisher(tmp_path)
     publisher.apply(0, "on", 70, SOURCE_CLOUD)
     publisher.set_court_names({0: "Premier Official Court -blau-"})
-    assert ha.set_state.call_args.args[2]["friendly_name"] == "Premier Official Court -blau-"
+    names = {c.args[0]: c.args[2]["friendly_name"] for c in ha.set_state.call_args_list}
+    assert names["binary_sensor.pista_1"] == "Premier Official Court -blau-"
+    assert names["binary_sensor.pista_2"] == "Pista 2"
 
 
 def test_custom_entity_template(tmp_path):
@@ -153,3 +172,67 @@ def test_custom_entity_template(tmp_path):
     )
     publisher.apply(1, "off", None, SOURCE_CLOUD)
     assert ha.set_state.call_args.args[0] == "binary_sensor.srlobo_pista_2"
+
+
+# --- every court gets its sensor from startup ---
+
+
+def _lights(states):
+    def get_state(entity_id):
+        return states.get(entity_id)
+
+    return get_state
+
+
+def test_every_court_gets_a_sensor_at_startup_copied_from_its_lights(tmp_path):
+    ha = MagicMock()
+    ha.get_state.side_effect = _lights(
+        {"light.luces_padel_2": {"state": "on", "attributes": {"brightness": 128}}}
+    )
+    publisher, ha = _publisher(tmp_path, ha=ha)
+    publisher.load()  # nothing saved yet
+
+    written = {c.args[0]: (c.args[1], c.args[2]["brightness"], c.args[2]["source"]) for c in ha.set_state.call_args_list}
+    assert written == {
+        "binary_sensor.pista_1": ("off", 0, "initial"),  # no lights in HA
+        "binary_sensor.pista_2": ("on", 50, "initial"),  # 128/255 -> 50 %
+    }
+    ha.call_service.assert_not_called()
+
+
+def test_initial_signal_is_saved_and_not_recomputed(tmp_path):
+    ha = MagicMock()
+    ha.get_state.return_value = {"state": "on", "attributes": {"brightness": 255}}
+    publisher, _ = _publisher(tmp_path, ha=ha)
+    publisher.load()
+
+    restarted_ha = MagicMock()
+    restarted_ha.get_state.return_value = {"state": "off"}
+    restarted, restarted_ha = _publisher(tmp_path, ha=restarted_ha)
+    restarted.load()
+    assert restarted.current(0) == ("on", 100)  # saved value wins over the lights now
+    restarted_ha.get_state.assert_not_called()
+
+
+def test_court_is_not_guessed_off_when_ha_cannot_be_read(tmp_path):
+    ha = MagicMock()
+    ha.get_state.side_effect = ConnectionError("core starting")
+    publisher, ha = _publisher(tmp_path, ha=ha)
+    publisher.load()
+    ha.set_state.assert_not_called()
+    assert publisher.current(0) is None
+
+    ha.get_state.side_effect = None
+    ha.get_state.return_value = {"state": "on", "attributes": {"brightness": 51}}
+    publisher.republish()  # next refresh
+    assert publisher.current(0) == ("on", 20)
+
+
+def test_cloud_signal_is_not_overwritten_by_initialisation(tmp_path):
+    ha = MagicMock()
+    ha.get_state.return_value = {"state": "off"}
+    publisher, ha = _publisher(tmp_path, ha=ha)
+    publisher.apply(0, "on", 70, SOURCE_CLOUD)
+    publisher.republish()
+    assert publisher.current(0) == ("on", 70)
+    assert publisher.current(1) == ("off", 0)

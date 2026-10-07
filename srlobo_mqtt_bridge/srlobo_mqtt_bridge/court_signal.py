@@ -12,6 +12,11 @@ drives the real lights (`light.luces_padel_{n}`), so local manual override
 with a timer keeps working, with or without internet. `light.luces_padel_{n}`
 is only read, for discovery and telemetry.
 
+Every court gets its sensor from startup, like in 1.0, even courts the cloud
+never sends anything for (no dimmable lights). A court that has never had a
+signal starts with the current state of its real lights (`off` if it has
+none), so creating the sensor doesn't make the local automation do anything.
+
 States written through the REST API are lost when HA Core restarts. The last
 signal per court is saved to /data and written again at startup, whenever the
 HA connection comes back, and every REFRESH_S. Rewriting an identical state
@@ -23,7 +28,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from .entity_registry import EntityRegistry, court_number
+from .entity_registry import EntityRegistry, court_helper_entity_id, court_number
 from .ha_client import HomeAssistantClient, HomeAssistantError
 from .persistence import DATA_DIR, read_json, write_json_atomic
 
@@ -35,6 +40,9 @@ REFRESH_S = 60
 
 SOURCE_CLOUD = "cloud"
 SOURCE_OFFLINE_SCHEDULE = "offline_schedule"
+# First value for a court that has never had a signal: copied from its real
+# lights, so creating the sensor doesn't make the local automation act.
+SOURCE_INITIAL = "initial"
 
 # ("on", 80) or ("off", 0)
 Signal = Tuple[str, int]
@@ -119,7 +127,15 @@ class CourtSignalPublisher:
     def load(self) -> None:
         """Loads saved signals and writes them to HA straight away, so the
         local automation has its input back before the cloud reconnects."""
-        stored = read_json(self._path)
+        self._restore(read_json(self._path))
+        self.republish()
+
+    def _restore(self, stored: Any) -> None:
+        """Loads valid saved signals for this installation into memory.
+
+        Args:
+            stored: Content of the persistence file, or None.
+        """
         if not isinstance(stored, dict) or stored.get("installation_id") != self._installation_id:
             if stored is not None:
                 logger.warning("Saved court signals are for another installation, ignoring them")
@@ -140,7 +156,6 @@ class CourtSignalPublisher:
                     continue
                 self._signals[index] = value
         logger.info("Restored court signals for %s courts", len(self._signals))
-        self.republish()
 
     def apply(self, index: int, state: Optional[str], brightness_pct: Any, source: str) -> bool:
         """Sets a court's signal from a cloud command or the offline schedule.
@@ -208,7 +223,9 @@ class CourtSignalPublisher:
 
     def republish(self) -> None:
         """Writes every known signal to HA again. Used at startup, when the
-        HA connection comes back (Core restart) and periodically."""
+        HA connection comes back (Core restart) and periodically. Courts
+        that have never had a signal get one first."""
+        self._initialize_missing()
         with self._lock:
             snapshot = dict(self._signals)
         for index, value in snapshot.items():
@@ -216,6 +233,56 @@ class CourtSignalPublisher:
                 self._write(index, value)
             except HomeAssistantError:
                 logger.warning("Could not rewrite court %s signal, will retry", index)
+
+    def _initialize_missing(self) -> None:
+        """Gives every court without a signal an initial one copied from its
+        real lights (`light.luces_padel_{n}`): on with their brightness, or
+        off if they're off or don't exist. If HA can't be read right now the
+        court is skipped and retried on the next refresh, rather than
+        guessing "off" and turning the court off."""
+        with self._lock:
+            missing = [i for i in sorted(self._registry.court_indexes()) if i not in self._signals]
+        if not missing:
+            return
+        changed = False
+        for index in missing:
+            try:
+                light = self._ha.get_state(court_helper_entity_id(index))
+            except Exception:  # noqa: BLE001 - HA may still be starting
+                logger.warning("Could not read court %s lights yet, will retry", index)
+                continue
+            signal = self._from_light(light)
+            with self._lock:
+                if index in self._signals:  # a real signal arrived meanwhile
+                    continue
+                self._signals[index] = {
+                    "state": signal[0],
+                    "brightness": signal[1],
+                    "source": SOURCE_INITIAL,
+                    "updated_at": self._now_iso(),
+                }
+                changed = True
+            logger.info("Court %s: initial signal %s copied from its lights", index, signal)
+        if changed:
+            with self._lock:
+                self._save_locked()
+
+    @staticmethod
+    def _from_light(light: Optional[Dict[str, Any]]) -> Signal:
+        """Args:
+            light: HA state of the court's light group, or None if it doesn't exist.
+
+        Returns:
+            The equivalent signal.
+        """
+        if not light or light.get("state") != "on":
+            return ("off", 0)
+        raw = (light.get("attributes") or {}).get("brightness")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            # HA light brightness is 0-255.
+            pct = int(round(raw * 100 / 255))
+            return ("on", max(1, min(100, pct)))
+        return ("on", 100)
 
     def start(self) -> None:
         """Starts the periodic refresh thread."""
