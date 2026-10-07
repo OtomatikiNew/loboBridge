@@ -1,6 +1,6 @@
 name: "SrLobo MQTT Bridge"
 description: "Standard MQTT bridge between SrLobo Cloud and Home Assistant"
-version: "0.2.7"
+version: "0.2.8"
 slug: "srlobo_mqtt_bridge"
 init: false
 homeassistant_api: true
@@ -42,8 +42,8 @@ schema:
   mode_select_entity_template: str
   lux_reference_entity_template: str
   calibration_trigger_entity_template: str
-  court_signal_entity_template: str
-  local_auto_manual_entity_template: str
+  court_signal_entity_template: str?
+  local_auto_manual_entity_template: str?
   reenable_manufacturers:
     - str
 
