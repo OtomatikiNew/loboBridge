@@ -155,6 +155,27 @@ def test_build_court_state_payload_detects_unavailable_device():
     assert state["shelly_online"] is False
 
 
+def test_shelly_online_ignores_unavailable_entities_other_than_the_light():
+    publisher = TelemetryPublisher(MagicMock(), MagicMock(), _options(), MagicMock())
+    telemetry_payload = {
+        "helper": {"state": "on"},
+        "devices": [
+            {
+                "member_entity_id": "light.w29",
+                "entities": {
+                    "light.w29": "on",
+                    "update.w29_firmware": "unavailable",
+                    "binary_sensor.w29_input_0": "unavailable",
+                },
+            }
+        ],
+    }
+
+    state = publisher._build_court_state_payload(telemetry_payload)
+
+    assert state["shelly_online"] is True
+
+
 def test_build_door_state_payload_includes_last_action_from_commands():
     commands = MagicMock()
     commands.last_door_action.return_value = "unlock"

@@ -4,13 +4,19 @@ Finds every real HA entity behind a court/door's hardware, not just the
 top-level helper/lock, so telemetry.py can publish everything unfiltered.
 Runs at startup and again on every WebSocket reconnect since a Core or
 add-on restart can change what's actually present.
+
+Siblings are found by Home Assistant device, not by name: a club can have
+any number of courts, so `luces_padel_1` must never pick up
+`luces_padel_10`. Only entities without a device are matched by name, 
+and then only on the exact name or the name followed by "_".
 """
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import BootstrapConfig
+from .device_registry import RegistrySnapshot
 from .entity_registry import EntityRegistry, court_helper_entity_id
 from .ha_client import HomeAssistantClient
 
@@ -89,9 +95,13 @@ class Discoverer:
         self._registry = registry
         self._bootstrap = bootstrap
 
-    def discover_all(self) -> DiscoveryState:
+    def discover_all(self, snapshot: Optional[RegistrySnapshot] = None) -> DiscoveryState:
         """Discovers every real HA entity behind each bootstrap court/door
         and registers them as owned.
+
+        Args:
+            snapshot: Registry snapshot, used to group entities by device.
+                Without it every entity is matched by name only.
 
         Returns:
             The full discovery state, including a reverse lookup for
@@ -100,10 +110,11 @@ class Discoverer:
         """
         all_states = self._ha.get_states()
         state = DiscoveryState(raw_states=all_states)
+        device_by_entity = snapshot.device_id_by_entity() if snapshot is not None else {}
 
         for court in self._bootstrap.courts:
             helper_entity_id = court_helper_entity_id(court.index)
-            devices = self._discover_devices(helper_entity_id, all_states)
+            devices = self._discover_devices(helper_entity_id, all_states, device_by_entity)
             state.courts[court.index] = CourtDiscovery(
                 index=court.index, helper_entity_id=helper_entity_id, devices=devices
             )
@@ -119,7 +130,7 @@ class Discoverer:
             except KeyError:
                 logger.warning("No entity_id configured for door index %s, skipping discovery", door.index)
                 continue
-            devices = self._discover_devices(lock_entity_id, all_states)
+            devices = self._discover_devices(lock_entity_id, all_states, device_by_entity)
             state.doors[door.index] = DoorDiscovery(
                 index=door.index, lock_entity_id=lock_entity_id, devices=devices
             )
@@ -148,16 +159,18 @@ class Discoverer:
                 seeds.append(door.entity_id)
         return seeds
 
-    def _discover_devices(self, helper_entity_id: str, all_states: List[Dict]) -> List[MemberDevice]:
+    def _discover_devices(
+        self, helper_entity_id: str, all_states: List[Dict], device_by_entity: Dict[str, str]
+    ) -> List[MemberDevice]:
         """Given a top-level helper (a court's light group) or a standalone
         entity (a door's lock), finds its member entities: a light group's
         `attributes.entity_id` lists its members; anything else is treated
-        as its own single member. For each member, finds sibling entities
-        sharing its device prefix.
+        as its own single member. For each member, finds its sibling entities.
 
         Args:
             helper_entity_id: Entity id of the court's light group helper or the door's lock.
             all_states: Snapshot of every HA entity state, used to find sibling entities.
+            device_by_entity: Entity id to HA device id, for entities that have a device.
 
         Returns:
             One MemberDevice per member entity, each with its related sibling entity ids.
@@ -171,30 +184,40 @@ class Discoverer:
 
         devices: List[MemberDevice] = []
         for member_entity_id in member_entity_ids:
-            devices.append(self._discover_device(member_entity_id, all_states))
+            devices.append(self._discover_device(member_entity_id, all_states, device_by_entity))
         return devices
 
     @staticmethod
-    def _discover_device(member_entity_id: str, all_states: List[Dict]) -> MemberDevice:
-        """Finds every entity sharing a member entity's device prefix (its
-        sibling sensors/diagnostics on the same physical device).
+    def _discover_device(
+        member_entity_id: str, all_states: List[Dict], device_by_entity: Dict[str, str]
+    ) -> MemberDevice:
+        """Finds a member entity's siblings: every entity on the same HA
+        device, plus entities without a device whose name is the member's
+        name or starts with it followed by "_".
 
         Args:
             member_entity_id: Entity id of the member entity to find siblings for.
             all_states: Snapshot of every HA entity state to search.
+            device_by_entity: Entity id to HA device id, for entities that have a device.
 
         Returns:
             The member entity bundled with its related sibling entity ids.
         """
-        domain, _, suffix = member_entity_id.partition(".")
-        prefix = suffix
-        related = [
-            state["entity_id"]
-            for state in all_states
-            if "entity_id" in state
-            and state["entity_id"].split(".", 1)[-1].startswith(prefix)
-            and _is_telemetry_entity(state["entity_id"])
-        ]
+        name = member_entity_id.partition(".")[2]
+        member_device = device_by_entity.get(member_entity_id)
+        related = []
+        for state in all_states:
+            entity_id = state.get("entity_id")
+            if not entity_id or not _is_telemetry_entity(entity_id):
+                continue
+            device = device_by_entity.get(entity_id)
+            if device is not None:
+                same = device == member_device
+            else:
+                other_name = entity_id.partition(".")[2]
+                same = other_name == name or other_name.startswith(f"{name}_")
+            if same:
+                related.append(entity_id)
         if member_entity_id not in related:
             related.append(member_entity_id)
         return MemberDevice(member_entity_id=member_entity_id, entity_ids=related)
