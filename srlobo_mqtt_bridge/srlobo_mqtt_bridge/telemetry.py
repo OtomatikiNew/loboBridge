@@ -381,10 +381,14 @@ class TelemetryPublisher:
         all_entities: Dict[str, str] = {}
 
         for device in telemetry.get("devices", []):
-            for entity_id, value in (device.get("entities") or {}).items():
+            entities = device.get("entities") or {}
+            # Only the device's own light says whether the light works. 
+            # Firmware, buttons, inputs or signal sensors being unavailable does not.
+            member_entity_id = device.get("member_entity_id")
+            if member_entity_id and entities.get(member_entity_id) == "unavailable":
+                saw_unavailable = True
+            for entity_id, value in entities.items():
                 all_entities[entity_id] = value
-                if value == "unavailable":
-                    saw_unavailable = True
                 if "_potencia" in entity_id:
                     try:
                         power_w = (power_w or 0) + float(value)

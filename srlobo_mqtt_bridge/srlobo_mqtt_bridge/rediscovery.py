@@ -92,6 +92,7 @@ class RediscoveryCoordinator:
         """
         with self._run_lock:
             enabled = 0
+            snapshot: Optional[RegistrySnapshot] = None
             try:
                 snapshot = RegistrySnapshot.fetch(self._ha)
                 enabled = self._enabler.run(snapshot, self._discoverer.seed_entity_ids(), only_device_ids)
@@ -99,7 +100,7 @@ class RediscoveryCoordinator:
             except Exception:  # noqa: BLE001
                 logger.warning("Could not read HA registries, skipping enable pass", exc_info=True)
 
-            discovery = self._discoverer.discover_all()
+            discovery = self._discoverer.discover_all(snapshot)
             self._telemetry.on_rediscover(discovery)
             # Dashboard writes are slow, keep them off this thread.
             threading.Thread(target=self._dashboard.update_discovery, args=(discovery,), daemon=True).start()

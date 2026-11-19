@@ -25,7 +25,7 @@ def test_reconnect_runs_reenable_pass_before_discovery_and_sets_firmware():
     coordinator, discoverer, enabler, telemetry, health = _coordinator()
     order = []
     enabler.run.side_effect = lambda *a, **k: order.append("enable") or 0
-    discoverer.discover_all.side_effect = lambda: order.append("discover") or DiscoveryState()
+    discoverer.discover_all.side_effect = lambda *a: order.append("discover") or DiscoveryState()
 
     coordinator.on_reconnect()
 

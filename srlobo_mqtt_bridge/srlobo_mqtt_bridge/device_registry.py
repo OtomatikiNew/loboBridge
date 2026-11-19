@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 # disabled_by values we re-enable. "user" is left alone.
 _REENABLE_DISABLED_BY = {"integration", "config_entry", "device", "hass"}
 
+# Integrations whose entities we re-enable. 
+_REENABLE_PLATFORMS = {"shelly", "nuki"}
+
+# Domains never re-enabled
+_NEVER_REENABLE_DOMAINS = {"update", "button"}
+
 
 @dataclass
 class RegistrySnapshot:
@@ -48,6 +54,18 @@ class RegistrySnapshot:
             if entity.get("entity_id") == entity_id:
                 return entity.get("device_id")
         return None
+
+    def device_id_by_entity(self) -> Dict[str, str]:
+        """Maps each entity that belongs to a device to that device.
+
+        Returns:
+            Entity id to device id. Entities without a device are left out.
+        """
+        return {
+            entity["entity_id"]: entity["device_id"]
+            for entity in self.entities
+            if entity.get("entity_id") and entity.get("device_id")
+        }
 
     def firmware_by_entity(self) -> Dict[str, str]:
         """Maps each entity to its device's sw_version, where known.
@@ -95,7 +113,9 @@ class DisabledEntityEnabler:
     ) -> int:
         """Re-enables integration-disabled entities on the devices behind
         `seed_entity_ids` and on every device from a configured
-        manufacturer, then reloads the affected config entries.
+        manufacturer, then reloads the affected config entries. Only
+        entities of the Shelly and Nuki integrations are touched, and never
+        firmware update or button entities.
 
         Args:
             snapshot: Registry snapshot.
@@ -125,7 +145,11 @@ class DisabledEntityEnabler:
                 continue
             if entity.get("disabled_by") not in _REENABLE_DISABLED_BY:
                 continue
+            if entity.get("platform") not in _REENABLE_PLATFORMS:
+                continue
             entity_id = entity.get("entity_id")
+            if not entity_id or entity_id.split(".", 1)[0] in _NEVER_REENABLE_DOMAINS:
+                continue
             try:
                 self._ha.enable_entity(entity_id)
             except HomeAssistantError:
